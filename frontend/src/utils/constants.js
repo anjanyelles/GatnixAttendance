@@ -1,0 +1,63 @@
+export const USER_ROLES = {
+  EMPLOYEE: 'EMPLOYEE',
+  MANAGER: 'MANAGER',
+  HR: 'HR',
+  ADMIN: 'ADMIN'
+}
+
+export const LEAVE_TYPES = {
+  CASUAL: 'CASUAL',
+  SICK: 'SICK',
+  WFH: 'WFH'
+}
+
+export const LEAVE_STATUS = {
+  PENDING: 'PENDING',
+  MANAGER_APPROVED: 'MANAGER_APPROVED',
+  HR_APPROVED: 'HR_APPROVED',
+  REJECTED: 'REJECTED'
+}
+
+export const REGULARIZATION_STATUS = {
+  PENDING: 'PENDING',
+  MANAGER_APPROVED: 'MANAGER_APPROVED',
+  HR_APPROVED: 'HR_APPROVED',
+  REJECTED: 'REJECTED'
+}
+
+export const ATTENDANCE_STATUS = {
+  PRESENT: 'PRESENT',
+  ABSENT: 'ABSENT',
+  LEAVE: 'LEAVE',
+  WFH: 'WFH'
+}
+
+export const STATUS_COLORS = {
+  SUCCESS: 'bg-green-100 text-green-800',
+  ERROR: 'bg-red-100 text-red-800',
+  WARNING: 'bg-yellow-100 text-yellow-800',
+  INFO: 'bg-blue-100 text-blue-800',
+  NEUTRAL: 'bg-gray-100 text-gray-800'
+}
+
+export const getStatusColor = (status) => {
+  switch (status) {
+    case LEAVE_STATUS.PENDING:
+    case REGULARIZATION_STATUS.PENDING:
+      return STATUS_COLORS.WARNING
+    case LEAVE_STATUS.MANAGER_APPROVED:
+    case REGULARIZATION_STATUS.MANAGER_APPROVED:
+      return STATUS_COLORS.INFO
+    case LEAVE_STATUS.HR_APPROVED:
+    case REGULARIZATION_STATUS.HR_APPROVED:
+    case ATTENDANCE_STATUS.PRESENT:
+      return STATUS_COLORS.SUCCESS
+    case LEAVE_STATUS.REJECTED:
+    case REGULARIZATION_STATUS.REJECTED:
+    case ATTENDANCE_STATUS.ABSENT:
+      return STATUS_COLORS.ERROR
+    default:
+      return STATUS_COLORS.NEUTRAL
+  }
+}
+
