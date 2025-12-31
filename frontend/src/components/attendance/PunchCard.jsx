@@ -35,7 +35,7 @@ const PunchCard = ({ status, punchInTime, punchOutTime, onPunchIn, onPunchOut, l
               <span className={locationValid ? 'text-green-600' : 'text-red-600'}>
                 {locationValid ? '✓' : '✗'}
               </span>
-              <span className="text-sm">Location Valid (within 60m)</span>
+              <span className="text-sm">Location Valid (within 50m)</span>
             </div>
           </div>
           <div className="flex items-center justify-between">

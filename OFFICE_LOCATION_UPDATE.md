@@ -9,7 +9,7 @@
 ## ✅ Already Updated
 
 I've updated the default values in the backend code. However, you still need to:
-
+      
 1. **Update via Admin Panel** (Recommended):
    - Login as ADMIN user
    - Go to `/admin/settings`

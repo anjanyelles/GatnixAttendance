@@ -62,7 +62,7 @@ const Navbar = () => {
               <h1 className="text-xl font-bold text-primary-600">Gatnix</h1>
             </div>
             <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-              {getRoleBasedLinks().map((link) => (
+              {/* {getRoleBasedLinks().map((link) => (
                 <Link
                   key={link.path}
                   to={link.path}
@@ -70,7 +70,7 @@ const Navbar = () => {
                 >
                   {link.label}
                 </Link>
-              ))}
+              ))} */}
             </div>
           </div>
           <div className="flex items-center">

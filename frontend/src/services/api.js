@@ -62,6 +62,8 @@ export const attendanceAPI = {
   getMyAttendance: (month, year) => api.get(`/attendance/my?month=${month}&year=${year}`),
   getTodayStatus: () => api.get('/attendance/today'),
   getMyMonthlyCalendar: (params) => api.get('/attendance/my-calendar', { params }),
+  sendHeartbeat: (data) => api.post('/attendance/heartbeat', data),
+  getPresenceStatus: () => api.get('/attendance/presence'),
 }
 
 // Leave API

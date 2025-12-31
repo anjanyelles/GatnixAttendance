@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { useLocation } from '../hooks/useLocation'
+import { useHeartbeat } from '../hooks/useHeartbeat'
 import { attendanceAPI } from '../services/api'
 import { toast } from 'react-toastify'
 import PunchCard from '../components/attendance/PunchCard'
 import LocationStatus from '../components/attendance/LocationStatus'
+import LocationPermissionPrompt from '../components/common/LocationPermissionPrompt'
 import Card from '../components/common/Card'
 import Table from '../components/common/Table'
 import { format } from 'date-fns'
@@ -12,7 +14,8 @@ import Select from '../components/common/Select'
 import Button from '../components/common/Button'
 
 const Attendance = () => {
-  const { location, error: locationError, loading: locationLoading, getCurrentLocation, getClientIP } = useLocation()
+  // Auto-request location on mount (especially important for mobile)
+  const { location, error: locationError, loading: locationLoading, getCurrentLocation, getClientIP } = useLocation(true)
   const [todayStatus, setTodayStatus] = useState(null)
   const [attendanceHistory, setAttendanceHistory] = useState([])
   const [loading, setLoading] = useState(false)
@@ -21,12 +24,75 @@ const Attendance = () => {
   const [wifiValid, setWifiValid] = useState(false)
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
+  const [showLocationPrompt, setShowLocationPrompt] = useState(false)
+  
+  const isPunchedIn = todayStatus?.punchedIn && !todayStatus?.punchOutTime
+  
+  // Handle auto punch out
+  const handleAutoPunchOut = (reason) => {
+    console.log('Auto punch out triggered:', reason)
+    loadTodayStatus()
+    loadAttendanceHistory()
+  }
+  
+  // Use heartbeat hook for presence monitoring
+  const { insideOffice, lastHeartbeat } = useHeartbeat(isPunchedIn, handleAutoPunchOut)
 
   useEffect(() => {
     loadTodayStatus()
     loadAttendanceHistory()
-    checkLocation()
+    
+    // Request location immediately when page loads (for mobile permission prompt)
+    const requestLocation = () => {
+      if (navigator.geolocation) {
+        // Request location immediately - this will trigger permission prompt on mobile
+        getCurrentLocation().catch((err) => {
+          // If permission denied, show prompt after a delay
+          if (err && err.includes && err.includes('permission')) {
+            setTimeout(() => {
+              setShowLocationPrompt(true)
+            }, 2000) // Show prompt after 2 seconds if permission denied
+          }
+        })
+      }
+    }
+    
+    // Request immediately and also after small delay (for mobile browsers)
+    requestLocation()
+    const timer = setTimeout(requestLocation, 500)
+    
+    // Also run checkLocation for validation
+    const checkTimer = setTimeout(() => {
+      checkLocation()
+    }, 1000)
+    
+    return () => {
+      clearTimeout(timer)
+      clearTimeout(checkTimer)
+    }
   }, [])
+
+  // Show prompt if location error is permission-related
+  useEffect(() => {
+    if (locationError && locationError.includes && locationError.includes('permission')) {
+      // Show prompt after a short delay
+      const timer = setTimeout(() => {
+        setShowLocationPrompt(true)
+      }, 1500)
+      return () => clearTimeout(timer)
+    }
+  }, [locationError])
+
+  // Show prompt if location error is permission-related
+  useEffect(() => {
+    if (locationError && locationError.includes('permission')) {
+      // Show prompt after a short delay
+      const timer = setTimeout(() => {
+        setShowLocationPrompt(true)
+      }, 1500)
+      return () => clearTimeout(timer)
+    }
+  }, [locationError])
 
   // Reload today status periodically to update punch out state
   useEffect(() => {
@@ -95,6 +161,24 @@ const Attendance = () => {
     try {
       const response = await attendanceAPI.getTodayStatus()
       setTodayStatus(response.data)
+      
+      // Also get presence status if punched in
+      if (response.data.punchedIn && !response.data.punchOutTime) {
+        try {
+          const presenceResponse = await attendanceAPI.getPresenceStatus()
+          if (presenceResponse.data) {
+            setTodayStatus(prev => ({
+              ...prev,
+              insideOffice: presenceResponse.data.insideOffice,
+              lastHeartbeat: presenceResponse.data.lastHeartbeat,
+              outCount: presenceResponse.data.outCount,
+              totalOutTimeMinutes: presenceResponse.data.totalOutTimeMinutes,
+            }))
+          }
+        } catch (err) {
+          console.error('Error loading presence status:', err)
+        }
+      }
     } catch (error) {
       console.error('Error loading today status:', error)
     }
@@ -210,6 +294,19 @@ const Attendance = () => {
 
   return (
     <div className="space-y-6">
+      <LocationPermissionPrompt
+        visible={showLocationPrompt}
+        onRequest={async () => {
+          setShowLocationPrompt(false)
+          try {
+            await getCurrentLocation()
+            toast.success('Location permission granted!')
+          } catch (err) {
+            toast.error('Please enable location in browser settings')
+          }
+        }}
+        onDismiss={() => setShowLocationPrompt(false)}
+      />
       <h1 className="text-3xl font-bold text-gray-900">Attendance</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -231,6 +328,10 @@ const Attendance = () => {
           location={location}
           error={locationError}
           loading={locationLoading}
+          insideOffice={insideOffice !== null ? insideOffice : todayStatus?.insideOffice}
+          lastHeartbeat={lastHeartbeat || todayStatus?.lastHeartbeat}
+          punchedIn={isPunchedIn}
+          onRequestLocation={getCurrentLocation}
         />
       </div>
 

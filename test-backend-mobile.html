@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backend API Test - Mobile</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #2563eb;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f3f4f6;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        .error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 Backend API Test - Mobile</h1>
+    <p>Use this page to test if your backend is accessible from mobile.</p>
+    
+    <div class="test-section">
+        <h2>1. Health Check</h2>
+        <p>Test if backend server is reachable:</p>
+        <button onclick="testHealth()">Test Health Endpoint</button>
+        <div id="health-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>2. CORS Test</h2>
+        <p>Test if CORS is configured correctly:</p>
+        <button onclick="testCORS()">Test CORS</button>
+        <div id="cors-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>3. Login Test (No Auth)</h2>
+        <p>Test login endpoint (will fail but shows if endpoint is reachable):</p>
+        <button onclick="testLogin()">Test Login Endpoint</button>
+        <div id="login-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Current Configuration</h2>
+        <p><strong>Backend URL:</strong> <span id="backend-url">http://192.168.1.223:3000</span></p>
+        <p><strong>Your IP:</strong> <span id="your-ip">Detecting...</span></p>
+    </div>
+
+    <script>
+        // Update backend URL based on current location
+        const currentHost = window.location.hostname;
+        const backendPort = 3000;
+        const backendURL = `http://${currentHost}:${backendPort}`;
+        document.getElementById('backend-url').textContent = backendURL;
+
+        // Detect IP (will show hostname)
+        document.getElementById('your-ip').textContent = currentHost;
+
+        async function testHealth() {
+            const resultDiv = document.getElementById('health-result');
+            resultDiv.textContent = 'Testing...';
+            resultDiv.className = 'result';
+
+            try {
+                const response = await fetch(`${backendURL}/health`);
+                const data = await response.json();
+                
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `✅ SUCCESS!\n\nStatus: ${response.status}\nResponse: ${JSON.stringify(data, null, 2)}`;
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ ERROR!\n\n${error.message}\n\nMake sure:\n1. Backend is running\n2. IP address is correct\n3. Firewall allows port 3000`;
+            }
+        }
+
+        async function testCORS() {
+            const resultDiv = document.getElementById('cors-result');
+            resultDiv.textContent = 'Testing...';
+            resultDiv.className = 'result';
+
+            try {
+                const response = await fetch(`${backendURL}/health`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ CORS OK!\n\nStatus: ${response.status}\nResponse: ${JSON.stringify(data, null, 2)}`;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `⚠️ CORS Issue!\n\nStatus: ${response.status}\nCheck backend CORS configuration`;
+                }
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ CORS ERROR!\n\n${error.message}\n\nThis usually means:\n1. Backend not accessible\n2. CORS not configured for this origin\n3. Network issue`;
+            }
+        }
+
+        async function testLogin() {
+            const resultDiv = document.getElementById('login-result');
+            resultDiv.textContent = 'Testing...';
+            resultDiv.className = 'result';
+
+            try {
+                const response = await fetch(`${backendURL}/api/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        email: 'test@test.com',
+                        password: 'test'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.status === 401 || response.status === 400) {
+                    // Expected - wrong credentials, but endpoint is reachable
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ Endpoint Reachable!\n\nStatus: ${response.status}\nResponse: ${JSON.stringify(data, null, 2)}\n\nThis is expected - endpoint works, just wrong credentials.`;
+                } else if (response.ok) {
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ Login Works!\n\nStatus: ${response.status}\nResponse: ${JSON.stringify(data, null, 2)}`;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `⚠️ Unexpected Status\n\nStatus: ${response.status}\nResponse: ${JSON.stringify(data, null, 2)}`;
+                }
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ ERROR!\n\n${error.message}\n\nEndpoint not reachable. Check:\n1. Backend is running\n2. API URL is correct\n3. Network connection`;
+            }
+        }
+    </script>
+</body>
+</html>
+
