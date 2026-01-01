@@ -1,4 +1,4 @@
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');  // Changed from 'bcrypt'
 const pool = require('./src/config/database');
 
 async function createAdminUser() {
@@ -37,4 +37,3 @@ async function createAdminUser() {
 }
 
 createAdminUser();
-
