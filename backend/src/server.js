@@ -22,11 +22,13 @@ const PORT = process.env.PORT || 3000;
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
   : [
-      'http://localhost:5173',  // Vite dev server (frontend)
-      'http://localhost:3000',   // Alternative frontend port
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:3000',
-      'http://192.168.1.223:5173', // Mobile access (update with your IP)
+    'http://localhost:5173',  // Vite dev server (frontend)
+    'http://localhost:5174',   // If your frontend runs on 5174
+    'http://localhost:3000',   // Alternative frontend port
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:5174',
+    'http://127.0.0.1:3000',
+    'http://192.168.1.223:5173',  // Mobile access (update with your IP)
     ];
 
 const corsOptions = {

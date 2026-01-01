@@ -1,14 +1,42 @@
 import axios from 'axios'
 import { toast } from 'react-toastify'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'
+
+const getApiBaseUrl = () => {
+  // In development, always use localhost
+  if (import.meta.env.DEV) {
+    return 'http://localhost:3000/api'
+  }
+  // In production, use environment variable
+  return import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'
+}
+
+const API_BASE_URL = getApiBaseUrl()
+
+// Add debug logging
+console.log('🔍 API Base URL:', API_BASE_URL)
+console.log('🔍 Environment:', import.meta.env.MODE)
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  timeout: 10000, // 10 seconds timeout
   headers: {
     'Content-Type': 'application/json',
   },
 })
+
+// ... rest of the file stays the same
+// Add debug logging
+console.log('🔍 API Base URL:', API_BASE_URL)
+
+// const api = axios.create({
+//   baseURL: API_BASE_URL,
+//   timeout: 10000, // 10 seconds timeout
+//   headers: {
+//     'Content-Type': 'application/json',
+//   },
+// })
+
 
 // Request interceptor to add JWT token
 api.interceptors.request.use(
@@ -17,6 +45,8 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    // Log request for debugging
+    console.log('📤 API Request:', config.method?.toUpperCase(), config.url)
     return config
   },
   (error) => {
@@ -26,8 +56,35 @@ api.interceptors.request.use(
 
 // Response interceptor to handle errors
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log('✅ API Response:', response.config.url)
+    return response
+  },
   (error) => {
+    // Log full error for debugging
+    console.error('❌ API Error:', {
+      url: error.config?.url,
+      method: error.config?.method,
+      status: error.response?.status,
+      message: error.message,
+      code: error.code,
+    })
+    
+    // Handle timeout errors
+    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+      const message = 'Request timeout. Please check your connection.'
+      toast.error(message)
+      return Promise.reject(new Error(message))
+    }
+    
+    // Handle network errors (CORS, connection refused, etc.)
+    if (error.message === 'Network Error' || !error.response) {
+      const message = 'Cannot connect to server. Check if backend is running and CORS is configured.'
+      console.error('Network Error Details:', error)
+      toast.error(message)
+      return Promise.reject(new Error(message))
+    }
+    
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
@@ -44,6 +101,8 @@ api.interceptors.response.use(
 )
 
 export default api
+
+// ... rest of the file stays the same
 
 // Auth API
 export const authAPI = {
