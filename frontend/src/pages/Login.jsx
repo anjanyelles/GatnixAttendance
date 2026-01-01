@@ -17,7 +17,7 @@ const Login = () => {
 
   useEffect(() => {
     if (isAuthenticated) {
-      navigate('/dashboard')
+      navigate('/dashboard', { replace: true })
     }
   }, [isAuthenticated, navigate])
 
@@ -42,16 +42,25 @@ const Login = () => {
     if (!validate()) return
 
     setLoading(true)
-    const result = await login(email, password)
-    setLoading(false)
+    try {
+      const result = await login(email, password)
+      setLoading(false)
 
-    if (result.success) {
-      if (rememberMe) {
-        localStorage.setItem('rememberEmail', email)
-      } else {
-        localStorage.removeItem('rememberEmail')
+      if (result && result.success) {
+        if (rememberMe) {
+          localStorage.setItem('rememberEmail', email)
+        } else {
+          localStorage.removeItem('rememberEmail')
+        }
+        
+        // Small delay to ensure state is updated, then navigate
+        setTimeout(() => {
+          navigate('/dashboard', { replace: true })
+        }, 100)
       }
-      navigate('/dashboard')
+    } catch (error) {
+      setLoading(false)
+      console.error('Login error:', error)
     }
   }
 
@@ -132,4 +141,3 @@ const Login = () => {
 }
 
 export default Login
-

@@ -23,12 +23,15 @@ export const AuthProvider = ({ children }) => {
 
     if (storedUser && storedToken) {
       try {
-        setUser(JSON.parse(storedUser))
+        const parsedUser = JSON.parse(storedUser)
+        setUser(parsedUser)
         setToken(storedToken)
       } catch (error) {
         console.error('Error parsing stored user:', error)
         localStorage.removeItem('user')
         localStorage.removeItem('token')
+        setUser(null)
+        setToken(null)
       }
     }
     setLoading(false)
@@ -39,15 +42,25 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.login(email, password)
       const { token: newToken, user: userData } = response.data
 
+      if (!newToken || !userData) {
+        throw new Error('Invalid response from server')
+      }
+
+      // Set localStorage first
       localStorage.setItem('token', newToken)
       localStorage.setItem('user', JSON.stringify(userData))
+      
+      // Then update state - use functional updates to ensure they happen
       setToken(newToken)
       setUser(userData)
 
       toast.success('Login successful!')
+      
+      // Return success - the navigation will happen in Login component
+      // or via the useEffect that watches isAuthenticated
       return { success: true, user: userData }
     } catch (error) {
-      const message = error.response?.data?.message || 'Login failed'
+      const message = error.response?.data?.message || error.message || 'Login failed'
       toast.error(message)
       return { success: false, error: message }
     }
@@ -57,6 +70,8 @@ export const AuthProvider = ({ children }) => {
     authAPI.logout()
     setUser(null)
     setToken(null)
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
     toast.info('Logged out successfully')
   }
 
@@ -77,4 +92,3 @@ export const AuthProvider = ({ children }) => {
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
-
