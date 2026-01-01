@@ -14,7 +14,7 @@
     "api",
     "express",
     "postgresql"
-  ],
+  ],  
   "author": "",
   "license": "ISC",
   "dependencies": {
