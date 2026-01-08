@@ -43,6 +43,13 @@ const Login = () => {
 
     setLoading(true)
     try {
+      // Log API URL for debugging
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 
+        (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+          ? `${window.location.protocol}//${window.location.hostname}:3000/api`
+          : 'http://localhost:3000/api')
+      console.log('🔐 Attempting login to:', `${apiBaseUrl}/auth/login`)
+      
       const result = await login(email, password)
       setLoading(false)
 
@@ -57,10 +64,14 @@ const Login = () => {
         setTimeout(() => {
           navigate('/dashboard', { replace: true })
         }, 100)
+      } else {
+        // Login failed but no error thrown
+        console.error('Login failed:', result)
       }
     } catch (error) {
       setLoading(false)
       console.error('Login error:', error)
+      // Error is already shown via toast in AuthContext
     }
   }
 
@@ -73,7 +84,7 @@ const Login = () => {
   }, [])
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8 mobile-safe-area">
       <div className="max-w-md w-full space-y-8">
         <div>
           <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">

@@ -26,5 +26,8 @@ router.get('/reports', hrController.getReports);
 // GET /api/hr/reports/export
 router.get('/reports/export', hrController.exportReports);
 
+// GET /api/hr/reports/movement-log
+router.get('/reports/movement-log', hrController.getMovementLog);
+
 module.exports = router;
 

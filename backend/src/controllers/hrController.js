@@ -289,7 +289,7 @@ const reviewRegularizationRequest = async (req, res) => {
 };
 
 /**
- * Get attendance reports
+ * Get attendance reports with movement tracking data
  */
 const getReports = async (req, res) => {
   try {
@@ -302,23 +302,45 @@ const getReports = async (req, res) => {
       });
     }
     
-    // Get attendance summary
-    const attendanceResult = await pool.query(
-      `SELECT 
+    // Check if attendance_out_periods table exists
+    let hasOutPeriodsTable = false;
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'attendance_out_periods')"
+      );
+      hasOutPeriodsTable = tableCheck.rows[0].exists;
+    } catch (err) {
+      hasOutPeriodsTable = false;
+    }
+    
+    // Get attendance summary with movement tracking data
+    let attendanceQuery = `SELECT 
         e.id,
         e.name,
         e.email,
-        COUNT(a.id) as total_days,
+        COUNT(DISTINCT a.id) as total_days,
         COUNT(CASE WHEN a.punch_in IS NOT NULL AND a.punch_out IS NOT NULL THEN 1 END) as full_days,
         COUNT(CASE WHEN a.punch_in IS NOT NULL AND a.punch_out IS NULL THEN 1 END) as incomplete_days,
-        COUNT(CASE WHEN a.punch_in IS NULL AND a.punch_out IS NULL THEN 1 END) as absent_days
+        COUNT(CASE WHEN a.punch_in IS NULL AND a.punch_out IS NULL THEN 1 END) as absent_days`;
+    
+    if (hasOutPeriodsTable) {
+      attendanceQuery += `,
+        COALESCE(SUM(COALESCE(a.out_count, 0)), 0) as total_out_count,
+        COALESCE(SUM(COALESCE(a.total_out_time_minutes, 0)), 0) as total_out_time_minutes`;
+    } else {
+      attendanceQuery += `,
+        0 as total_out_count,
+        0 as total_out_time_minutes`;
+    }
+    
+    attendanceQuery += `
        FROM employees e
        LEFT JOIN attendance a ON e.id = a.employee_id AND a.date BETWEEN $1 AND $2
        WHERE e.is_active = true
        GROUP BY e.id, e.name, e.email
-       ORDER BY e.name`,
-      [startDate, endDate]
-    );
+       ORDER BY e.name`;
+    
+    const attendanceResult = await pool.query(attendanceQuery, [startDate, endDate]);
     
     // Get leave summary
     const leaveResult = await pool.query(
@@ -347,6 +369,89 @@ const getReports = async (req, res) => {
     });
   } catch (error) {
     console.error('Get reports error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+};
+
+/**
+ * Get detailed movement log for employees
+ */
+const getMovementLog = async (req, res) => {
+  try {
+    const { startDate, endDate, employeeId } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Start date and end date are required',
+      });
+    }
+    
+    // Check if attendance_out_periods table exists
+    let hasOutPeriodsTable = false;
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'attendance_out_periods')"
+      );
+      hasOutPeriodsTable = tableCheck.rows[0].exists;
+    } catch (err) {
+      hasOutPeriodsTable = false;
+    }
+    
+    if (!hasOutPeriodsTable) {
+      return res.json({
+        success: true,
+        movementLog: [],
+        message: 'Movement tracking not available. Please run database migration.',
+      });
+    }
+    
+    // Build query for movement log
+    let query = `
+      SELECT 
+        e.id as employee_id,
+        e.name as employee_name,
+        e.email as employee_email,
+        a.date,
+        aop.id as period_id,
+        aop.out_time,
+        aop.in_time,
+        aop.duration_minutes,
+        aop.reason,
+        CASE 
+          WHEN aop.in_time IS NULL THEN 'OUT'
+          ELSE 'IN'
+        END as status,
+        a.ip_address as wifi_status,
+        CASE 
+          WHEN a.distance_meters <= (SELECT radius_meters FROM office_settings ORDER BY id DESC LIMIT 1) THEN 'Inside Radius'
+          ELSE 'Outside Radius'
+        END as location_status
+      FROM attendance_out_periods aop
+      JOIN attendance a ON aop.attendance_id = a.id
+      JOIN employees e ON a.employee_id = e.id
+      WHERE a.date BETWEEN $1 AND $2`;
+    
+    const params = [startDate, endDate];
+    
+    if (employeeId) {
+      query += ` AND e.id = $${params.length + 1}`;
+      params.push(parseInt(employeeId));
+    }
+    
+    query += ` ORDER BY e.name, a.date, aop.out_time`;
+    
+    const result = await pool.query(query, params);
+    
+    res.json({
+      success: true,
+      movementLog: result.rows,
+    });
+  } catch (error) {
+    console.error('Get movement log error:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',
@@ -428,5 +533,6 @@ module.exports = {
   reviewRegularizationRequest,
   getReports,
   exportReports,
+  getMovementLog,
 };
 

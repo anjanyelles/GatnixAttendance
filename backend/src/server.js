@@ -32,8 +32,12 @@ const allowedOrigins = process.env.FRONTEND_URL
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
+    // Allow requests with no origin (like mobile apps, Postman, or curl requests)
+    // This is important for mobile browsers that might not send Origin header
+    if (!origin) {
+      console.log('CORS: Allowing request with no origin (mobile/PWA)');
+      return callback(null, true);
+    }
     
     // In development, allow all local network IPs (for mobile access)
     if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
@@ -44,21 +48,34 @@ const corsOptions = {
         /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(origin);
       
       if (isLocalNetwork || allowedOrigins.indexOf(origin) !== -1) {
+        console.log('CORS: Allowing origin (development):', origin);
         return callback(null, true);
       }
     }
     
     // In production, only allow specific origins
     if (allowedOrigins.indexOf(origin) !== -1) {
+      console.log('CORS: Allowing origin (production):', origin);
       callback(null, true);
     } else {
       console.log('CORS blocked origin:', origin);
+      console.log('Allowed origins:', allowedOrigins);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true, // Important for cookies/auth tokens
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers'
+  ],
+  exposedHeaders: ['Authorization'], // Expose Authorization header to frontend
+  maxAge: 86400, // Cache preflight requests for 24 hours
 };
 
 app.use(cors(corsOptions));

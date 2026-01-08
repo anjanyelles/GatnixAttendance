@@ -53,11 +53,11 @@ export const useLocation = (autoRequest = false) => {
       setLoading(true)
       setError(null)
 
-      // For mobile browsers, use watchPosition first to trigger permission, then getCurrentPosition
+      // For mobile browsers, optimize options for better accuracy and reliability
       const options = {
-        enableHighAccuracy: true,
-        timeout: 20000, // Increased timeout for mobile
-        maximumAge: 0,
+        enableHighAccuracy: true, // Use GPS if available (important for mobile)
+        timeout: 30000, // Increased timeout for mobile (30 seconds)
+        maximumAge: 60000, // Accept cached location up to 1 minute old (reduces battery drain)
       }
 
       const successCallback = (position) => {
@@ -103,26 +103,64 @@ export const useLocation = (autoRequest = false) => {
   // Auto-request location on mount if autoRequest is true
   useEffect(() => {
     if (autoRequest && !location && !loading && !error) {
-      // Small delay to ensure component is mounted (important for mobile)
+      // Delay to ensure component is mounted and page is fully loaded (important for mobile)
+      // Mobile browsers need more time to initialize geolocation API
       const timer = setTimeout(() => {
         getCurrentLocation().catch(() => {
           // Error already handled in getCurrentLocation
         })
-      }, 500) // Increased delay for mobile browsers
+      }, 1000) // Increased delay for mobile browsers (1 second)
       return () => clearTimeout(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRequest]) // Only run when autoRequest changes
 
   const getClientIP = async () => {
-    try {
-      const response = await fetch('https://api.ipify.org?format=json')
-      const data = await response.json()
-      return data.ip
-    } catch (error) {
-      console.error('Failed to get IP address:', error)
-      return null
+    // Try multiple IP detection services for better reliability on mobile
+    const ipServices = [
+      'https://api.ipify.org?format=json',
+      'https://api64.ipify.org?format=json',
+      'https://ipapi.co/json/',
+    ]
+    
+    for (const service of ipServices) {
+      try {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
+        
+        const response = await fetch(service, {
+          signal: controller.signal,
+          headers: {
+            'Accept': 'application/json',
+          },
+        })
+        
+        clearTimeout(timeoutId)
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+        
+        const data = await response.json()
+        
+        // Handle different response formats
+        if (data.ip) {
+          return data.ip
+        } else if (data.query) {
+          return data.query
+        } else if (typeof data === 'string') {
+          return data.trim()
+        }
+      } catch (error) {
+        console.warn(`IP service ${service} failed:`, error.message)
+        // Try next service
+        continue
+      }
     }
+    
+    // All services failed
+    console.error('Failed to get IP address from all services')
+    return null
   }
 
   return {

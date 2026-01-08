@@ -11,10 +11,13 @@ import { getStatusColor } from '../../utils/constants'
 
 const Reports = () => {
   const [reports, setReports] = useState([])
+  const [movementLog, setMovementLog] = useState([])
   const [loading, setLoading] = useState(false)
+  const [loadingMovementLog, setLoadingMovementLog] = useState(false)
   const [startDate, setStartDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [endDate, setEndDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [department, setDepartment] = useState('')
+  const [showMovementLog, setShowMovementLog] = useState(false)
   const [summary, setSummary] = useState({
     totalPresent: 0,
     totalAbsent: 0,
@@ -47,6 +50,8 @@ const Reports = () => {
         fullDays: parseInt(emp.full_days || emp.fullDays || 0),
         incompleteDays: parseInt(emp.incomplete_days || emp.incompleteDays || 0),
         absentDays: parseInt(emp.absent_days || emp.absentDays || 0),
+        totalOutCount: parseInt(emp.total_out_count || 0),
+        totalOutTimeHours: parseFloat(((emp.total_out_time_minutes || 0) / 60).toFixed(2)),
       }))
       
       setReports(mappedReports)
@@ -90,14 +95,32 @@ const Reports = () => {
     }
   }
 
+  const loadMovementLog = async () => {
+    try {
+      setLoadingMovementLog(true)
+      const params = {
+        startDate,
+        endDate,
+      }
+      const response = await hrAPI.getMovementLog(params)
+      setMovementLog(response.data.movementLog || [])
+      setShowMovementLog(true)
+    } catch (error) {
+      console.error('Error loading movement log:', error)
+      toast.error('Failed to load movement log')
+    } finally {
+      setLoadingMovementLog(false)
+    }
+  }
+
   const reportColumns = [
     {
       header: 'Employee Name',
       accessor: 'employeeName',
       render: (row) => (
-        <div>
-          <div className="font-medium">{row.employeeName}</div>
-          <div className="text-sm text-gray-500">{row.email}</div>
+        <div className="min-w-[150px]">
+          <div className="font-medium text-sm md:text-base">{row.employeeName}</div>
+          <div className="text-xs md:text-sm text-gray-500 truncate">{row.email}</div>
         </div>
       ),
     },
@@ -105,7 +128,7 @@ const Reports = () => {
       header: 'Total Days',
       accessor: 'totalDays',
       render: (row) => (
-        <span className="font-semibold">{row.totalDays}</span>
+        <span className="font-semibold text-sm md:text-base">{row.totalDays}</span>
       ),
     },
     {
@@ -132,6 +155,97 @@ const Reports = () => {
       render: (row) => (
         <span className="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
           {row.absentDays}
+        </span>
+      ),
+    },
+    {
+      header: 'Times Out',
+      accessor: 'totalOutCount',
+      render: (row) => (
+        <span className="font-semibold text-sm md:text-base">{row.totalOutCount || 0}</span>
+      ),
+    },
+    {
+      header: 'Total Out Time',
+      accessor: 'totalOutTimeHours',
+      render: (row) => (
+        <span className="text-sm md:text-base">{row.totalOutTimeHours || 0} hrs</span>
+      ),
+    },
+  ]
+
+  const movementLogColumns = [
+    {
+      header: 'Employee',
+      accessor: 'employee_name',
+      render: (row) => (
+        <div className="min-w-[120px]">
+          <div className="font-medium text-sm">{row.employee_name}</div>
+          <div className="text-xs text-gray-500">{format(new Date(row.date), 'MMM dd')}</div>
+        </div>
+      ),
+    },
+    {
+      header: 'Time',
+      accessor: 'out_time',
+      render: (row) => (
+        <div className="text-sm">
+          <div className="font-medium">
+            {row.status === 'OUT' ? 'OUT:' : 'IN:'} {format(new Date(row.out_time), 'h:mm a')}
+          </div>
+          {row.in_time && (
+            <div className="text-xs text-gray-500">
+              IN: {format(new Date(row.in_time), 'h:mm a')}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      header: 'Status',
+      accessor: 'status',
+      render: (row) => (
+        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+          row.status === 'OUT' ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-800'
+        }`}>
+          {row.status}
+        </span>
+      ),
+    },
+    {
+      header: 'Duration',
+      accessor: 'duration_minutes',
+      render: (row) => {
+        if (!row.in_time && row.status === 'OUT') {
+          const now = new Date()
+          const outTime = new Date(row.out_time)
+          const minutes = Math.floor((now - outTime) / 1000 / 60)
+          return <span className="text-sm text-orange-600">Active: {minutes} min</span>
+        }
+        return row.duration_minutes ? (
+          <span className="text-sm">{(row.duration_minutes / 60).toFixed(2)} hrs</span>
+        ) : '-'
+      },
+    },
+    {
+      header: 'Wi-Fi',
+      accessor: 'wifi_status',
+      render: (row) => (
+        <span className={`text-xs ${
+          row.wifi_status ? 'text-green-600' : 'text-gray-500'
+        }`}>
+          {row.wifi_status ? 'Connected' : 'N/A'}
+        </span>
+      ),
+    },
+    {
+      header: 'Location',
+      accessor: 'location_status',
+      render: (row) => (
+        <span className={`text-xs ${
+          row.location_status?.includes('Inside') ? 'text-green-600' : 'text-red-600'
+        }`}>
+          {row.location_status || 'N/A'}
         </span>
       ),
     },
@@ -196,7 +310,19 @@ const Reports = () => {
         </div>
       </Card>
 
-      <Card title="Employee Attendance Summary">
+      <Card 
+        title="Daily Attendance Summary"
+        headerAction={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={showMovementLog ? () => setShowMovementLog(false) : loadMovementLog}
+            loading={loadingMovementLog}
+          >
+            {showMovementLog ? 'Hide' : 'Show'} Movement Log
+          </Button>
+        }
+      >
         <Table
           columns={reportColumns}
           data={reports}
@@ -204,6 +330,20 @@ const Reports = () => {
           emptyMessage="No attendance data found for the selected period"
         />
       </Card>
+
+      {showMovementLog && (
+        <Card title="Detailed Movement Log">
+          <div className="mb-4 text-sm text-gray-600">
+            Shows all OUT/IN movements when employees left office radius or disconnected from Wi-Fi
+          </div>
+          <Table
+            columns={movementLogColumns}
+            data={movementLog}
+            loading={loadingMovementLog}
+            emptyMessage="No movement data found for the selected period"
+          />
+        </Card>
+      )}
     </div>
   )
 }

@@ -1302,6 +1302,29 @@ const sendHeartbeat = async (req, res) => {
  */
 const checkHeartbeatTimeouts = async () => {
   try {
+    // Check if last_heartbeat column exists
+    let hasHeartbeatColumn = false;
+    try {
+      const columnCheck = await pool.query(
+        `SELECT EXISTS (
+          SELECT 1 
+          FROM information_schema.columns 
+          WHERE table_name = 'attendance' 
+          AND column_name = 'last_heartbeat'
+        )`
+      );
+      hasHeartbeatColumn = columnCheck.rows[0].exists;
+    } catch (err) {
+      // If check fails, assume column doesn't exist
+      hasHeartbeatColumn = false;
+    }
+    
+    // If heartbeat column doesn't exist, skip this check
+    if (!hasHeartbeatColumn) {
+      console.log('[Heartbeat Check] last_heartbeat column not found. Skipping heartbeat timeout check.');
+      return 0;
+    }
+    
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     const today = new Date().toISOString().split('T')[0];
     
@@ -1321,36 +1344,72 @@ const checkHeartbeatTimeouts = async () => {
     
     for (const attendance of result.rows) {
       // Auto punch out
-      await pool.query(
-        'UPDATE attendance SET punch_out = $1, is_auto_punched_out = true, status = $2 WHERE id = $3',
-        [now, 'INCOMPLETE', attendance.id]
-      );
+      try {
+        // Check if is_auto_punched_out column exists
+        const autoPunchColumnCheck = await pool.query(
+          `SELECT EXISTS (
+            SELECT 1 
+            FROM information_schema.columns 
+            WHERE table_name = 'attendance' 
+            AND column_name = 'is_auto_punched_out'
+          )`
+        );
+        const hasAutoPunchColumn = autoPunchColumnCheck.rows[0].exists;
+        
+        if (hasAutoPunchColumn) {
+          await pool.query(
+            'UPDATE attendance SET punch_out = $1, is_auto_punched_out = true, status = $2 WHERE id = $3',
+            [now, 'INCOMPLETE', attendance.id]
+          );
+        } else {
+          await pool.query(
+            'UPDATE attendance SET punch_out = $1, status = $2 WHERE id = $3',
+            [now, 'INCOMPLETE', attendance.id]
+          );
+        }
+      } catch (err) {
+        console.error('Error auto punching out:', err.message);
+        continue;
+      }
       
       // If there's an active OUT period, close it (only if table exists)
       try {
-      const outPeriodResult = await pool.query(
-        `SELECT * FROM attendance_out_periods 
-         WHERE attendance_id = $1 AND in_time IS NULL 
-         ORDER BY out_time DESC LIMIT 1`,
-        [attendance.id]
-      );
-      
-      if (outPeriodResult.rows.length > 0) {
-        const outPeriod = outPeriodResult.rows[0];
-        const outTime = new Date(outPeriod.out_time);
-        const durationMinutes = Math.floor((now - outTime) / 1000 / 60);
-        
-        await pool.query(
-          `UPDATE attendance_out_periods 
-           SET in_time = $1, duration_minutes = $2, reason = 'HEARTBEAT_TIMEOUT'
-           WHERE id = $3`,
-          [now, durationMinutes, outPeriod.id]
+        const outPeriodResult = await pool.query(
+          `SELECT * FROM attendance_out_periods 
+           WHERE attendance_id = $1 AND in_time IS NULL 
+           ORDER BY out_time DESC LIMIT 1`,
+          [attendance.id]
         );
         
-        await pool.query(
-          'UPDATE attendance SET total_out_time_minutes = total_out_time_minutes + $1 WHERE id = $2',
-          [durationMinutes, attendance.id]
-        );
+        if (outPeriodResult.rows.length > 0) {
+          const outPeriod = outPeriodResult.rows[0];
+          const outTime = new Date(outPeriod.out_time);
+          const durationMinutes = Math.floor((now - outTime) / 1000 / 60);
+          
+          await pool.query(
+            `UPDATE attendance_out_periods 
+             SET in_time = $1, duration_minutes = $2, reason = 'HEARTBEAT_TIMEOUT'
+             WHERE id = $3`,
+            [now, durationMinutes, outPeriod.id]
+          );
+          
+          // Check if total_out_time_minutes column exists
+          const outTimeColumnCheck = await pool.query(
+            `SELECT EXISTS (
+              SELECT 1 
+              FROM information_schema.columns 
+              WHERE table_name = 'attendance' 
+              AND column_name = 'total_out_time_minutes'
+            )`
+          );
+          const hasOutTimeColumn = outTimeColumnCheck.rows[0].exists;
+          
+          if (hasOutTimeColumn) {
+            await pool.query(
+              'UPDATE attendance SET total_out_time_minutes = COALESCE(total_out_time_minutes, 0) + $1 WHERE id = $2',
+              [durationMinutes, attendance.id]
+            );
+          }
         }
       } catch (err) {
         // Table doesn't exist or query failed - ignore and continue
@@ -1362,8 +1421,9 @@ const checkHeartbeatTimeouts = async () => {
     
     return result.rows.length;
   } catch (error) {
-    console.error('Check heartbeat timeouts error:', error);
-    throw error;
+    // Don't throw error, just log it to prevent server crashes
+    console.error('Check heartbeat timeouts error:', error.message);
+    return 0;
   }
 };
 
