@@ -109,7 +109,7 @@ const Sidebar = () => {
               >
                 ✕
               </button>
-            )}
+            )}  
           </div>
         <nav className="space-y-2">
           {getMenuItems().map((item) => (
