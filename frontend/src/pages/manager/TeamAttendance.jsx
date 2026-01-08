@@ -28,7 +28,26 @@ const TeamAttendance = () => {
         ...(employeeId && { employeeId }),
       }
       const response = await managerAPI.getTeamAttendance(params)
-      setAttendance(response.data.teamAttendance || response.data || [])
+      
+      // Map API response (snake_case) to frontend format (camelCase)
+      const rawData = response.data.teamAttendance || response.data || []
+      const mappedData = rawData.map(item => ({
+        id: item.id,
+        employeeId: item.employee_id,
+        employeeName: item.employee_name || item.name || '-',
+        employeeEmail: item.employee_email || item.email || '-',
+        date: item.date,
+        punchIn: item.punch_in,
+        punchOut: item.punch_out,
+        status: item.status || (item.punch_in && !item.punch_out ? 'PRESENT' : item.punch_in && item.punch_out ? 'PRESENT' : 'ABSENT'),
+        latitude: item.latitude,
+        longitude: item.longitude,
+        distanceMeters: item.distance_meters,
+        ipAddress: item.ip_address,
+        createdAt: item.created_at,
+      }))
+      
+      setAttendance(mappedData)
     } catch (error) {
       console.error('Error loading team attendance:', error)
     } finally {
@@ -61,30 +80,78 @@ const TeamAttendance = () => {
     {
       header: 'Employee Name',
       accessor: 'employeeName',
+      render: (row) => (
+        <div>
+          <div className="font-medium">{row.employeeName || '-'}</div>
+          <div className="text-xs text-gray-500">{row.employeeEmail || ''}</div>
+        </div>
+      ),
     },
     {
       header: 'Date',
       accessor: 'date',
-      render: (row) => format(new Date(row.date), 'MMM dd, yyyy'),
+      render: (row) => {
+        if (!row.date) return '-'
+        try {
+          const date = new Date(row.date)
+          if (isNaN(date.getTime())) return '-'
+          return format(date, 'MMM dd, yyyy')
+        } catch {
+          return '-'
+        }
+      },
     },
     {
       header: 'Punch In',
       accessor: 'punchIn',
-      render: (row) => row.punchIn ? format(new Date(row.punchIn), 'h:mm a') : '-',
+      render: (row) => {
+        if (!row.punchIn) return '-'
+        try {
+          const date = new Date(row.punchIn)
+          if (isNaN(date.getTime())) return '-'
+          return format(date, 'h:mm a')
+        } catch {
+          return '-'
+        }
+      },
     },
     {
       header: 'Punch Out',
       accessor: 'punchOut',
-      render: (row) => row.punchOut ? format(new Date(row.punchOut), 'h:mm a') : '-',
+      render: (row) => {
+        if (!row.punchOut) return '-'
+        try {
+          const date = new Date(row.punchOut)
+          if (isNaN(date.getTime())) return '-'
+          return format(date, 'h:mm a')
+        } catch {
+          return '-'
+        }
+      },
     },
     {
       header: 'Status',
       accessor: 'status',
-      render: (row) => (
-        <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(row.status)}`}>
-          {row.status}
+      render: (row) => {
+        // Calculate status if not provided
+        let status = row.status
+        if (!status) {
+          if (!row.punchIn) {
+            status = 'ABSENT'
+          } else if (row.punchIn && !row.punchOut) {
+            status = 'PRESENT'
+          } else if (row.punchIn && row.punchOut) {
+            status = 'PRESENT'
+          } else {
+            status = 'ABSENT'
+          }
+        }
+        return (
+          <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(status)}`}>
+            {status || 'ABSENT'}
         </span>
-      ),
+        )
+      },
     },
   ]
 

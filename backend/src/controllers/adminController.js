@@ -103,23 +103,34 @@ const getEmployees = async (req, res) => {
   try {
     const { role, isActive } = req.query;
     
-    let query = 'SELECT id, name, email, role, manager_id, is_active, created_at FROM employees WHERE 1=1';
+    let query = `SELECT 
+                   e.id, 
+                   e.name, 
+                   e.email, 
+                   e.role, 
+                   e.manager_id, 
+                   e.is_active, 
+                   e.created_at,
+                   m.name as manager_name
+                 FROM employees e
+                 LEFT JOIN employees m ON e.manager_id = m.id
+                 WHERE 1=1`;
     const params = [];
     let paramCount = 0;
     
     if (role) {
       paramCount++;
-      query += ` AND role = $${paramCount}`;
+      query += ` AND e.role = $${paramCount}`;
       params.push(role);
     }
     
     if (isActive !== undefined) {
       paramCount++;
-      query += ` AND is_active = $${paramCount}`;
+      query += ` AND e.is_active = $${paramCount}`;
       params.push(isActive === 'true');
     }
     
-    query += ' ORDER BY created_at DESC';
+    query += ' ORDER BY e.created_at DESC';
     
     const result = await pool.query(query, params);
     
@@ -142,7 +153,10 @@ const getEmployees = async (req, res) => {
 const updateEmployee = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, role, managerId, isActive } = req.body;
+    const { name, email, role, managerId, isActive, status } = req.body;
+    
+    // Map status to isActive if provided
+    const isActiveValue = status !== undefined ? (status === 'ACTIVE') : isActive;
     
     // Check if employee exists
     const empCheck = await pool.query(
@@ -247,7 +261,12 @@ const updateEmployee = async (req, res) => {
       }
     }
     
-    if (isActive !== undefined) {
+    // Handle both isActive and status fields
+    if (isActiveValue !== undefined) {
+      paramCount++;
+      updates.push(`is_active = $${paramCount}`);
+      params.push(isActiveValue === true || isActiveValue === 'true');
+    } else if (isActive !== undefined) {
       paramCount++;
       updates.push(`is_active = $${paramCount}`);
       params.push(isActive === true || isActive === 'true');
@@ -636,9 +655,12 @@ const getMonthlyAttendanceCalendar = async (req, res) => {
       [lastDay.toISOString().split('T')[0], firstDay.toISOString().split('T')[0]]
     );
     
-    // Get all holidays for the month (handle case where table doesn't exist)
+    // Get all holidays for the month (ensure table exists first)
     let holidaysResult = { rows: [] };
     try {
+      // Ensure table exists
+      await ensureHolidaysTable();
+      
       holidaysResult = await pool.query(
         `SELECT date, name, description
          FROM holidays
@@ -647,11 +669,29 @@ const getMonthlyAttendanceCalendar = async (req, res) => {
         [monthNum, yearNum]
       );
     } catch (error) {
-      if (error.code === '42P01') { // Table doesn't exist
-        console.warn('Holidays table does not exist. Please run: node setup-holidays-table.js');
-      } else {
-        throw error;
-      }
+      console.warn('Error fetching holidays:', error.message);
+      // Continue without holidays if there's an error
+    }
+    
+    // Get all approved regularization requests for the month
+    let regularizationResult = { rows: [] };
+    try {
+      regularizationResult = await pool.query(
+        `SELECT 
+          employee_id,
+          attendance_date,
+          requested_punch_in,
+          requested_punch_out,
+          status
+         FROM regularization_requests
+         WHERE status = 'HR_APPROVED'
+           AND EXTRACT(MONTH FROM attendance_date) = $1
+           AND EXTRACT(YEAR FROM attendance_date) = $2
+         ORDER BY employee_id, attendance_date`,
+        [monthNum, yearNum]
+      );
+    } catch (error) {
+      console.warn('Error fetching regularization requests:', error.message);
     }
     
     // Build calendar data structure
@@ -659,6 +699,7 @@ const getMonthlyAttendanceCalendar = async (req, res) => {
     const attendanceMap = new Map();
     const leaveMap = new Map();
     const holidaysSet = new Set();
+    const regularizationMap = new Map();
     
     // Map attendance by employee_id and date
     attendanceResult.rows.forEach(att => {
@@ -732,6 +773,31 @@ const getMonthlyAttendanceCalendar = async (req, res) => {
       holidaysSet.add(dateStr);
     });
     
+    // Map approved regularizations by employee_id and date
+    regularizationResult.rows.forEach(reg => {
+      if (!reg.attendance_date) return;
+      let dateStr;
+      try {
+        if (reg.attendance_date instanceof Date) {
+          dateStr = reg.attendance_date.toISOString().split('T')[0];
+        } else if (typeof reg.attendance_date === 'string') {
+          dateStr = reg.attendance_date.split('T')[0];
+        } else {
+          dateStr = new Date(reg.attendance_date).toISOString().split('T')[0];
+        }
+      } catch (e) {
+        console.warn('Error parsing regularization date:', reg.attendance_date, e);
+        return;
+      }
+      const key = `${reg.employee_id}_${dateStr}`;
+      // Regularization overrides attendance - always use regularization data if available
+      regularizationMap.set(key, {
+        punch_in: reg.requested_punch_in,
+        punch_out: reg.requested_punch_out,
+        status: 'PRESENT',
+      });
+    });
+    
     // Build calendar for each employee
     employeesResult.rows.forEach(employee => {
       const employeeRow = {
@@ -761,26 +827,33 @@ const getMonthlyAttendanceCalendar = async (req, res) => {
         let dayType = 'WORKDAY';
         let leaveType = null;
         
-        // Check if it's an admin-defined holiday
-        if (holidaysSet.has(dateStr)) {
+        // Priority 1: Check for approved regularization (overrides everything)
+        const regularization = regularizationMap.get(key);
+        if (regularization) {
+          dayType = 'WORKDAY';
+          dayStatus = 'PRESENT';
+          employeeRow.summary.presentDays++;
+        }
+        // Priority 2: Check if it's an admin-defined holiday (but not if there's regularization)
+        else if (holidaysSet.has(dateStr)) {
           dayType = 'HOLIDAY';
           dayStatus = 'HOLIDAY';
           employeeRow.summary.holidayDays++;
         }
-        // Check if it's a weekend (Saturday = 6, Sunday = 0)
+        // Priority 3: Check if it's a weekend (but not if there's regularization)
         else if (dayOfWeek === 0 || dayOfWeek === 6) {
           dayType = 'WEEKEND';
           dayStatus = 'HOLIDAY';
           employeeRow.summary.holidayDays++;
         } else {
-          // Check for leave
+          // Priority 4: Check for leave
           if (leaveMap.has(key)) {
             dayType = 'LEAVE';
             dayStatus = 'LEAVE';
             leaveType = leaveMap.get(key);
             employeeRow.summary.leaveDays++;
           } else {
-            // Check attendance
+            // Priority 5: Check attendance
             const attendance = attendanceMap.get(key);
             if (attendance) {
               dayStatus = attendance.status;
@@ -803,8 +876,8 @@ const getMonthlyAttendanceCalendar = async (req, res) => {
           status: dayStatus,
           type: dayType,
           leaveType,
-          punchIn: attendanceMap.get(key)?.punch_in || null,
-          punchOut: attendanceMap.get(key)?.punch_out || null,
+          punchIn: (regularizationMap.get(key) || attendanceMap.get(key))?.punch_in || null,
+          punchOut: (regularizationMap.get(key) || attendanceMap.get(key))?.punch_out || null,
         });
       }
       
@@ -841,10 +914,53 @@ const exportMonthlyAttendanceCSV = async (req, res) => {
 };
 
 /**
+ * Ensure holidays table exists (create if it doesn't)
+ */
+const ensureHolidaysTable = async () => {
+  try {
+    // Check if table exists
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'holidays'
+      )
+    `);
+    
+    if (!tableCheck.rows[0].exists) {
+      // Create holidays table
+      await pool.query(`
+        CREATE TABLE holidays (
+          id SERIAL PRIMARY KEY,
+          date DATE NOT NULL UNIQUE,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          created_by INTEGER REFERENCES employees(id),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      
+      // Create index
+      await pool.query(`
+        CREATE INDEX idx_holidays_date ON holidays(date)
+      `);
+      
+      console.log('✅ Holidays table created automatically');
+    }
+  } catch (error) {
+    console.error('Error ensuring holidays table exists:', error);
+    throw error;
+  }
+};
+
+/**
  * Get all holidays
  */
 const getHolidays = async (req, res) => {
   try {
+    // Ensure table exists
+    await ensureHolidaysTable();
+    
     const { year } = req.query;
     
     let query = 'SELECT * FROM holidays';
@@ -864,12 +980,6 @@ const getHolidays = async (req, res) => {
       holidays: result.rows,
     });
   } catch (error) {
-    if (error.code === '42P01') { // Table doesn't exist
-      return res.status(500).json({
-        success: false,
-        error: 'Holidays table does not exist. Please run: node setup-holidays-table.js',
-      });
-    }
     console.error('Get holidays error:', error);
     res.status(500).json({
       success: false,
@@ -883,6 +993,9 @@ const getHolidays = async (req, res) => {
  */
 const createHoliday = async (req, res) => {
   try {
+    // Ensure table exists
+    await ensureHolidaysTable();
+    
     const { date, name, description } = req.body;
     const adminId = req.user.id;
     
@@ -904,12 +1017,6 @@ const createHoliday = async (req, res) => {
       holiday: result.rows[0],
     });
   } catch (error) {
-    if (error.code === '42P01') { // Table doesn't exist
-      return res.status(500).json({
-        success: false,
-        error: 'Holidays table does not exist. Please run: node setup-holidays-table.js',
-      });
-    }
     if (error.code === '23505') { // Unique violation
       return res.status(400).json({
         success: false,
@@ -929,6 +1036,9 @@ const createHoliday = async (req, res) => {
  */
 const updateHoliday = async (req, res) => {
   try {
+    // Ensure table exists
+    await ensureHolidaysTable();
+    
     const { id } = req.params;
     const { date, name, description } = req.body;
     
@@ -957,12 +1067,6 @@ const updateHoliday = async (req, res) => {
       holiday: result.rows[0],
     });
   } catch (error) {
-    if (error.code === '42P01') { // Table doesn't exist
-      return res.status(500).json({
-        success: false,
-        error: 'Holidays table does not exist. Please run: node setup-holidays-table.js',
-      });
-    }
     if (error.code === '23505') { // Unique violation
       return res.status(400).json({
         success: false,
@@ -982,6 +1086,9 @@ const updateHoliday = async (req, res) => {
  */
 const deleteHoliday = async (req, res) => {
   try {
+    // Ensure table exists
+    await ensureHolidaysTable();
+    
     const { id } = req.params;
     
     const result = await pool.query(
@@ -1001,12 +1108,6 @@ const deleteHoliday = async (req, res) => {
       message: 'Holiday deleted successfully',
     });
   } catch (error) {
-    if (error.code === '42P01') { // Table doesn't exist
-      return res.status(500).json({
-        success: false,
-        error: 'Holidays table does not exist. Please run: node setup-holidays-table.js',
-      });
-    }
     console.error('Delete holiday error:', error);
     res.status(500).json({
       success: false,

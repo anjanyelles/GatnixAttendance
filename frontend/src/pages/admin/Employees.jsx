@@ -32,9 +32,25 @@ const Employees = () => {
     try {
       setLoading(true)
       const response = await adminAPI.getEmployees()
-      setEmployees(response.data.employees || response.data || [])
+      
+      // Map API response (snake_case) to frontend format (camelCase)
+      const rawData = response.data.employees || response.data || []
+      const mappedData = rawData.map(emp => ({
+        id: emp.id,
+        name: emp.name || '-',
+        email: emp.email || '-',
+        role: emp.role || 'EMPLOYEE',
+        managerId: emp.manager_id || null,
+        managerName: emp.manager_name || null,
+        status: emp.is_active ? 'ACTIVE' : 'INACTIVE',
+        isActive: emp.is_active !== false,
+        createdAt: emp.created_at,
+      }))
+      
+      setEmployees(mappedData)
     } catch (error) {
       console.error('Error loading employees:', error)
+      toast.error('Failed to load employees')
     } finally {
       setLoading(false)
     }
@@ -56,12 +72,12 @@ const Employees = () => {
   const handleEdit = (employee) => {
     setEditingEmployee(employee)
     setFormData({
-      name: employee.name,
-      email: employee.email,
+      name: employee.name || '',
+      email: employee.email || '',
       password: '',
-      role: employee.role,
-      managerId: employee.managerId || '',
-      status: employee.status,
+      role: employee.role || USER_ROLES.EMPLOYEE,
+      managerId: employee.managerId || employee.manager_id || '',
+      status: employee.status || (employee.isActive !== false ? 'ACTIVE' : 'INACTIVE'),
     })
     setShowModal(true)
   }
@@ -69,17 +85,38 @@ const Employees = () => {
   const handleSubmit = async (e) => {
     e.preventDefault()
     try {
+      // Prepare data for API - map status to isActive
+      const apiData = {
+        name: formData.name,
+        email: formData.email,
+        role: formData.role,
+        managerId: formData.managerId && formData.managerId !== '' ? parseInt(formData.managerId) : null,
+        isActive: formData.status === 'ACTIVE',
+      }
+      
       if (editingEmployee) {
-        await adminAPI.updateEmployee(editingEmployee.id, formData)
+        // For update, include password only if provided
+        if (formData.password) {
+          apiData.password = formData.password
+        }
+        await adminAPI.updateEmployee(editingEmployee.id, apiData)
         toast.success('Employee updated successfully!')
       } else {
-        await adminAPI.addEmployee(formData)
+        // For create, password is required
+        if (!formData.password) {
+          toast.error('Password is required')
+          return
+        }
+        apiData.password = formData.password
+        // For create, don't send isActive (defaults to true in backend)
+        delete apiData.isActive
+        await adminAPI.addEmployee(apiData)
         toast.success('Employee added successfully!')
       }
       setShowModal(false)
       await loadEmployees()
     } catch (error) {
-      const message = error.response?.data?.message || 'Failed to save employee'
+      const message = error.response?.data?.error || error.response?.data?.message || 'Failed to save employee'
       toast.error(message)
     }
   }

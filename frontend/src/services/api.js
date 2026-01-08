@@ -3,8 +3,15 @@ import { toast } from 'react-toastify'
 
 
 const getApiBaseUrl = () => {
-  // In development, always use localhost
+  // In development, detect if we're on mobile/network access
   if (import.meta.env.DEV) {
+    // If accessing from mobile/network (not localhost), use the same host with port 3000
+    const currentHost = window.location.hostname
+    if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+      // Mobile/network access - use the same IP but port 3000 for backend
+      return `http://${currentHost}:3000/api`
+    }
+    // Local development - use localhost
     return 'http://localhost:3000/api'
   }
   // In production, use environment variable
@@ -24,18 +31,6 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 })
-
-// ... rest of the file stays the same
-// Add debug logging
-console.log('🔍 API Base URL:', API_BASE_URL)
-
-// const api = axios.create({
-//   baseURL: API_BASE_URL,
-//   timeout: 10000, // 10 seconds timeout
-//   headers: {
-//     'Content-Type': 'application/json',
-//   },
-// })
 
 
 // Request interceptor to add JWT token

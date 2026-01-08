@@ -6,13 +6,18 @@ const pool = require('../config/database');
 const getTeamAttendance = async (req, res) => {
   try {
     const managerId = req.user.id;
-    const { month, year } = req.query;
+    const { month, year, startDate, endDate, employeeId } = req.query;
     
     // Get all direct reports
-    const teamResult = await pool.query(
-      'SELECT id FROM employees WHERE manager_id = $1 AND is_active = true',
-      [managerId]
-    );
+    let teamQuery = 'SELECT id FROM employees WHERE manager_id = $1 AND is_active = true';
+    let teamParams = [managerId];
+    
+    if (employeeId) {
+      teamQuery += ' AND id = $2';
+      teamParams.push(parseInt(employeeId));
+    }
+    
+    const teamResult = await pool.query(teamQuery, teamParams);
     
     if (teamResult.rows.length === 0) {
       return res.json({
@@ -29,9 +34,15 @@ const getTeamAttendance = async (req, res) => {
                  JOIN employees e ON a.employee_id = e.id 
                  WHERE a.employee_id IN (${placeholders})`;
     const params = [...teamIds];
+    let paramIndex = teamIds.length + 1;
     
-    if (month && year) {
-      query += ` AND EXTRACT(MONTH FROM a.date) = $${params.length + 1} AND EXTRACT(YEAR FROM a.date) = $${params.length + 2}`;
+    // Support both date range and month/year filters
+    if (startDate && endDate) {
+      query += ` AND a.date >= $${paramIndex} AND a.date <= $${paramIndex + 1}`;
+      params.push(startDate, endDate);
+      paramIndex += 2;
+    } else if (month && year) {
+      query += ` AND EXTRACT(MONTH FROM a.date) = $${paramIndex} AND EXTRACT(YEAR FROM a.date) = $${paramIndex + 1}`;
       params.push(parseInt(month), parseInt(year));
     } else {
       query += ' AND a.date >= CURRENT_DATE - INTERVAL \'30 days\'';
@@ -303,10 +314,20 @@ const reviewRegularizationRequest = async (req, res) => {
     
     const newStatus = action === 'approve' ? 'MANAGER_APPROVED' : 'REJECTED';
     
-    // Update regularization request
+    // Ensure manager_comments column exists
+    try {
+      await pool.query(`
+        ALTER TABLE regularization_requests 
+        ADD COLUMN IF NOT EXISTS manager_comments TEXT
+      `);
+    } catch (alterError) {
+      // Column might already exist, ignore
+    }
+    
+    // Update regularization request with manager comments
     const updateResult = await pool.query(
-      'UPDATE regularization_requests SET status = $1, reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *',
-      [newStatus, managerId, id]
+      'UPDATE regularization_requests SET status = $1, reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP, manager_comments = $4 WHERE id = $3 RETURNING *',
+      [newStatus, managerId, id, comments || null]
     );
     
     res.json({

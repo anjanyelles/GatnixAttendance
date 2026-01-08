@@ -57,6 +57,42 @@ const applyForRegularization = async (req, res) => {
       });
     }
     
+
+        
+        if (isNaN(punchIn.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid punch in timestamp',
+          });
+        }
+        
+        if (punchOut && isNaN(punchOut.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid punch out timestamp',
+          });
+        }
+        
+        // Handle night shifts: if punch out time is earlier than punch in time on the same date,
+        // assume punch out is the next day
+        if (punchOut) {
+          let punchOutDate = new Date(punchOut);
+          const punchInDate = new Date(punchIn);
+          
+          // If punch out time is earlier than punch in time, it's likely a night shift
+          // Add one day to punch out
+          if (punchOutDate < punchInDate) {
+            punchOutDate = new Date(punchOutDate);
+            punchOutDate.setDate(punchOutDate.getDate() + 1);
+          }
+          
+          if (punchInDate >= punchOutDate) {
+            return res.status(400).json({
+              success: false,
+              error: 'Punch in must be before punch out',
+            });
+          }
+        }
     // Insert regularization request
     const result = await pool.query(
       'INSERT INTO regularization_requests (employee_id, attendance_date, requested_punch_in, requested_punch_out, reason, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',

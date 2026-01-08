@@ -28,7 +28,6 @@ const allowedOrigins = process.env.FRONTEND_URL
     'http://127.0.0.1:5173',
     'http://127.0.0.1:5174',
     'http://127.0.0.1:3000',
-    'http://192.168.1.223:5173',  // Mobile access (update with your IP)
     ];
 
 const corsOptions = {
@@ -36,9 +35,24 @@ const corsOptions = {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+    // In development, allow all local network IPs (for mobile access)
+    if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
+      // Allow localhost and local network IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+      const isLocalNetwork = 
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(origin);
+      
+      if (isLocalNetwork || allowedOrigins.indexOf(origin) !== -1) {
+        return callback(null, true);
+      }
+    }
+    
+    // In production, only allow specific origins
+    if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
+      console.log('CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },

@@ -31,26 +31,21 @@ export const useHeartbeat = (isPunchedIn, onAutoPunchOut) => {
       })
 
       if (response.data) {
-        setInsideOffice(response.data.insideOffice !== false)
+        const isInside = response.data.insideOffice !== false
+        setInsideOffice(isInside)
         setLastHeartbeat(new Date())
 
-        // Handle auto punch out
-        if (response.data.autoPunchedOut) {
-          if (onAutoPunchOut) {
-            onAutoPunchOut(response.data.reason || 'AUTO')
+        // Update status based on presence (no auto punch out)
+        if (response.data.status === 'OUT_OF_OFFICE' && isInside === false) {
+          // Just went out - show info toast
+          if (response.data.outTime) {
+            toast.info('Marked as OUT OF OFFICE')
           }
-          
-          if (response.data.reason === 'MAX_OUT_COUNT') {
-            toast.warning('Auto punched out: Maximum OUT count (2) reached for today')
-          } else if (response.data.reason === 'MAX_OUT_TIME') {
-            toast.warning('Auto punched out: Total OUT time exceeds 240 minutes')
-          } else {
-            toast.warning('Auto punched out: You left the office')
+        } else if (response.data.status === 'INSIDE_OFFICE' && isInside === true) {
+          // Just came back in
+          if (response.data.inTime) {
+            toast.success(`Back IN OFFICE (Out duration: ${response.data.outDurationMinutes || 0} min)`)
           }
-          
-          stopHeartbeat()
-        } else if (response.data.insideOffice === false) {
-          toast.info('You are outside the office. OUT period started.')
         }
       }
     } catch (error) {

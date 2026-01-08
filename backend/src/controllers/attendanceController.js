@@ -88,11 +88,15 @@ const validateLocationAndIP = async (latitude, longitude, ipAddress) => {
 /**
  * Punch In
  */
+/**
+ * Punch In - Supports multiple punches per day (max 4)
+ */
 const punchIn = async (req, res) => {
   try {
     const { latitude, longitude, ipAddress } = req.body;
     const employeeId = req.user.id;
     const today = new Date().toISOString().split('T')[0];
+    const MAX_PUNCHES_PER_DAY = 4;
     
     // Validate input
     if (!latitude || !longitude || !ipAddress) {
@@ -128,67 +132,190 @@ const punchIn = async (req, res) => {
       });
     }
     
-    // Check if already punched in today
-    const existingCheck = await pool.query(
-      'SELECT id, punch_in FROM attendance WHERE employee_id = $1 AND date = $2',
+    // Check if new punch event tables exist
+    let useNewTables = false;
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'punch_in_events')"
+      );
+      useNewTables = tableCheck.rows[0].exists;
+    } catch (err) {
+      useNewTables = false;
+    }
+    
+    // Get or create today's attendance record
+    let attendanceResult = await pool.query(
+      'SELECT * FROM attendance WHERE employee_id = $1 AND date = $2',
       [employeeId, today]
     );
     
-    if (existingCheck.rows.length > 0 && existingCheck.rows[0].punch_in) {
-      return res.status(400).json({
-        success: false,
-        error: 'Already punched in for today',
-      });
-    }
-    
+    let attendanceId;
     const punchInTime = new Date();
     
-    // Insert or update attendance
-    if (existingCheck.rows.length > 0) {
-      // Update existing record
-      await pool.query(
-        'UPDATE attendance SET punch_in = $1, latitude = $2, longitude = $3, distance_meters = $4, ip_address = $5, last_heartbeat = $6, status = $7, total_out_time_minutes = 0, out_count = 0 WHERE id = $8',
-        [
-          punchInTime,
-          latitude,
-          longitude,
-          validation.distance,
-          ipAddress,
-          punchInTime, // Set initial heartbeat
-          'PRESENT',
-          existingCheck.rows[0].id,
-        ]
+    if (useNewTables) {
+      // Use new table structure with multiple punches
+      if (attendanceResult.rows.length === 0) {
+        // Create new attendance record
+        const insertResult = await pool.query(
+          'INSERT INTO attendance (employee_id, date, punch_in_count, punch_out_count, is_currently_in) VALUES ($1, $2, 0, 0, false) RETURNING id',
+          [employeeId, today]
+        );
+        attendanceId = insertResult.rows[0].id;
+      } else {
+        attendanceId = attendanceResult.rows[0].id;
+        
+        // Check if already punched in (has active punch in)
+        const activePunchIn = await pool.query(
+          'SELECT id FROM punch_in_events WHERE attendance_id = $1 AND is_active = true LIMIT 1',
+          [attendanceId]
+        );
+        
+        if (activePunchIn.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+            error: 'You are already punched in. Please punch out first.',
+          });
+        }
+        
+        // Check punch count limit
+        const punchCountResult = await pool.query(
+          'SELECT COUNT(*) as count FROM punch_in_events WHERE attendance_id = $1',
+          [attendanceId]
+        );
+        const punchCount = parseInt(punchCountResult.rows[0].count);
+        
+        if (punchCount >= MAX_PUNCHES_PER_DAY) {
+          return res.status(400).json({
+            success: false,
+            error: `Maximum ${MAX_PUNCHES_PER_DAY} punch ins allowed per day`,
+          });
+        }
+    }
+    
+      // Create punch in event
+      const punchInEventResult = await pool.query(
+        `INSERT INTO punch_in_events 
+         (attendance_id, employee_id, date, punch_in_time, latitude, longitude, distance_meters, ip_address, is_active) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) 
+         RETURNING id`,
+        [attendanceId, employeeId, today, punchInTime, latitude, longitude, validation.distance, ipAddress]
       );
+      
+      const punchInEventId = punchInEventResult.rows[0].id;
+      
+      // Update attendance record
+        await pool.query(
+        `UPDATE attendance 
+         SET punch_in_count = COALESCE(punch_in_count, 0) + 1,
+             current_punch_in_id = $1,
+             is_currently_in = true,
+             punch_in = $2,
+             latitude = $3,
+             longitude = $4,
+             distance_meters = $5,
+             ip_address = $6
+         WHERE id = $7`,
+        [punchInEventId, punchInTime, latitude, longitude, validation.distance, ipAddress, attendanceId]
+      );
+      
+      // Fetch updated attendance with punch events
+      const updatedAttendance = await pool.query(
+        `SELECT a.*, 
+                (SELECT COUNT(*) FROM punch_in_events WHERE attendance_id = a.id) as total_punch_ins,
+                (SELECT COUNT(*) FROM punch_out_events WHERE attendance_id = a.id) as total_punch_outs
+         FROM attendance a 
+         WHERE a.id = $1`,
+        [attendanceId]
+      );
+      
+      // Get all punch events for today
+      const punchEvents = await pool.query(
+        `SELECT 
+          pi.id as punch_in_id,
+          pi.punch_in_time,
+          pi.is_active,
+          po.id as punch_out_id,
+          po.punch_out_time,
+          po.is_auto,
+          po.reason
+         FROM punch_in_events pi
+         LEFT JOIN punch_out_events po ON pi.id = po.punch_in_event_id
+         WHERE pi.attendance_id = $1
+         ORDER BY pi.punch_in_time DESC`,
+        [attendanceId]
+      );
+      
+      res.json({
+        success: true,
+        message: 'Punched in successfully',
+        attendance: updatedAttendance.rows[0],
+        punchEvents: punchEvents.rows,
+        punchInCount: parseInt(updatedAttendance.rows[0].total_punch_ins || 1),
+        punchOutCount: parseInt(updatedAttendance.rows[0].total_punch_outs || 0),
+      });
     } else {
-      // Insert new record
-      await pool.query(
-        'INSERT INTO attendance (employee_id, date, punch_in, latitude, longitude, distance_meters, ip_address, last_heartbeat, status, total_out_time_minutes, out_count) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
-        [employeeId, today, punchInTime, latitude, longitude, validation.distance, ipAddress, punchInTime, 'PRESENT', 0, 0]
-      );
+      // Use basic table structure (single punch per day)
+      if (attendanceResult.rows.length > 0 && attendanceResult.rows[0].punch_in) {
+        return res.status(400).json({
+          success: false,
+          error: 'Already punched in for today',
+        });
+      }
+      
+      if (attendanceResult.rows.length === 0) {
+        // Create new attendance record
+        const insertResult = await pool.query(
+          'INSERT INTO attendance (employee_id, date, punch_in, latitude, longitude, distance_meters, ip_address) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+          [employeeId, today, punchInTime, latitude, longitude, validation.distance, ipAddress]
+        );
+        attendanceId = insertResult.rows[0].id;
+      } else {
+        // Update existing record
+        attendanceId = attendanceResult.rows[0].id;
+        await pool.query(
+          'UPDATE attendance SET punch_in = $1, latitude = $2, longitude = $3, distance_meters = $4, ip_address = $5 WHERE id = $6',
+          [punchInTime, latitude, longitude, validation.distance, ipAddress, attendanceId]
+        );
     }
     
     // Fetch updated attendance
     const result = await pool.query(
-      'SELECT * FROM attendance WHERE employee_id = $1 AND date = $2',
-      [employeeId, today]
+        'SELECT * FROM attendance WHERE id = $1',
+        [attendanceId]
     );
     
     res.json({
       success: true,
       message: 'Punched in successfully',
       attendance: result.rows[0],
+        punchInCount: 1,
+        punchOutCount: result.rows[0].punch_out ? 1 : 0,
     });
+    }
   } catch (error) {
     console.error('Punch in error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+    });
+    
+    const errorMessage = process.env.NODE_ENV === 'development' 
+      ? `Database error: ${error.message}${error.detail ? ` - ${error.detail}` : ''}`
+      : 'Internal server error';
+    
     res.status(500).json({
       success: false,
-      error: 'Internal server error',
+      error: errorMessage,
     });
   }
 };
 
 /**
  * Punch Out
+ */
+/**
+ * Punch Out - Supports multiple punches per day
  */
 const punchOut = async (req, res) => {
   try {
@@ -213,55 +340,68 @@ const punchOut = async (req, res) => {
       });
     }
     
-    // Check if there's an approved leave for today
-    const leaveCheck = await pool.query(
-      `SELECT id FROM leave_requests 
-       WHERE employee_id = $1 
-         AND status IN ('MANAGER_APPROVED', 'HR_APPROVED')
-         AND DATE(from_date) <= $2 
-         AND DATE(to_date) >= $2`,
+    // Check if new punch event tables exist
+    let useNewTables = false;
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'punch_in_events')"
+      );
+      useNewTables = tableCheck.rows[0].exists;
+    } catch (err) {
+      useNewTables = false;
+    }
+    
+    // Get today's attendance
+    const attendanceResult = await pool.query(
+      'SELECT * FROM attendance WHERE employee_id = $1 AND date = $2',
       [employeeId, today]
     );
     
-    if (leaveCheck.rows.length > 0) {
+    if (attendanceResult.rows.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Cannot mark attendance on approved leave dates',
+        error: 'No attendance record found for today',
       });
     }
     
-    // Check if punched in today
-    const existingCheck = await pool.query(
-      'SELECT id, punch_in, punch_out FROM attendance WHERE employee_id = $1 AND date = $2',
-      [employeeId, today]
-    );
+    const attendance = attendanceResult.rows[0];
+    const punchOutTime = new Date();
     
-    if (existingCheck.rows.length === 0 || !existingCheck.rows[0].punch_in) {
+    if (!attendance.punch_in) {
       return res.status(400).json({
         success: false,
         error: 'Must punch in before punching out',
       });
     }
     
-    if (existingCheck.rows[0].punch_out) {
+    if (attendance.punch_out) {
       return res.status(400).json({
         success: false,
         error: 'Already punched out for today',
       });
     }
     
-    const punchOutTime = new Date();
+    // Check if attendance_out_periods table exists
+    let totalOutTimeMinutes = attendance.total_out_time_minutes || 0;
+    let hasOutPeriodsTable = false;
     
-    // Close any active OUT periods
-    const outPeriodResult = await pool.query(
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'attendance_out_periods')"
+      );
+      hasOutPeriodsTable = tableCheck.rows[0].exists;
+      
+      if (hasOutPeriodsTable) {
+        // Close any active OUT period
+        const activeOutPeriodResult = await pool.query(
       `SELECT * FROM attendance_out_periods 
        WHERE attendance_id = $1 AND in_time IS NULL 
        ORDER BY out_time DESC LIMIT 1`,
-      [existingCheck.rows[0].id]
+          [attendance.id]
     );
     
-    if (outPeriodResult.rows.length > 0) {
-      const outPeriod = outPeriodResult.rows[0];
+        if (activeOutPeriodResult.rows.length > 0) {
+          const outPeriod = activeOutPeriodResult.rows[0];
       const outTime = new Date(outPeriod.out_time);
       const durationMinutes = Math.floor((punchOutTime - outTime) / 1000 / 60);
       
@@ -272,45 +412,96 @@ const punchOut = async (req, res) => {
         [punchOutTime, durationMinutes, outPeriod.id]
       );
       
-      await pool.query(
-        'UPDATE attendance SET total_out_time_minutes = total_out_time_minutes + $1 WHERE id = $2',
-        [durationMinutes, existingCheck.rows[0].id]
-      );
+          totalOutTimeMinutes += durationMinutes;
+        }
+        
+        // Recalculate total out time from all periods
+        const allPeriodsResult = await pool.query(
+          `SELECT SUM(duration_minutes) as total FROM attendance_out_periods 
+           WHERE attendance_id = $1 AND in_time IS NOT NULL`,
+          [attendance.id]
+        );
+        
+        if (allPeriodsResult.rows[0].total) {
+          totalOutTimeMinutes = parseInt(allPeriodsResult.rows[0].total);
+        }
+      }
+    } catch (err) {
+      console.log('Error handling out periods:', err.message);
     }
     
-    // Calculate final status based on total OUT time
-    const attendance = existingCheck.rows[0];
-    const totalOutMinutes = (attendance.total_out_time_minutes || 0);
-    let finalStatus = 'PRESENT';
+    // Calculate net working time
+    const punchInTime = new Date(attendance.punch_in);
+    const totalMinutes = Math.floor((punchOutTime - punchInTime) / 1000 / 60);
+    const netWorkingMinutes = Math.max(0, totalMinutes - totalOutTimeMinutes);
     
-    if (totalOutMinutes > 240) {
-      finalStatus = 'ABSENT';
-    } else if (totalOutMinutes > 120) {
-      finalStatus = 'HALF_DAY';
+    // Calculate status based on net working time
+    let status = 'PRESENT';
+    if (netWorkingMinutes < 240) { // Less than 4 hours
+      status = 'ABSENT';
+    } else if (netWorkingMinutes < 480) { // Less than 8 hours
+      status = 'HALF_DAY';
+    } else { // 8 hours or more
+      status = 'PRESENT';
     }
     
-    // Update attendance
+    // Update attendance record
     await pool.query(
-      'UPDATE attendance SET punch_out = $1, status = $2 WHERE id = $3',
-      [punchOutTime, finalStatus, existingCheck.rows[0].id]
+      `UPDATE attendance 
+       SET punch_out = $1, 
+           status = $2,
+           total_out_time_minutes = $3
+       WHERE id = $4`,
+      [punchOutTime, status, totalOutTimeMinutes, attendance.id]
     );
     
     // Fetch updated attendance
     const result = await pool.query(
-      'SELECT * FROM attendance WHERE employee_id = $1 AND date = $2',
-      [employeeId, today]
+      'SELECT * FROM attendance WHERE id = $1',
+      [attendance.id]
     );
+    
+    // Get OUT sessions if table exists
+    let outSessions = [];
+    if (hasOutPeriodsTable) {
+      try {
+        const sessionsResult = await pool.query(
+          `SELECT * FROM attendance_out_periods 
+           WHERE attendance_id = $1 
+           ORDER BY out_time ASC`,
+          [attendance.id]
+        );
+        outSessions = sessionsResult.rows.map(period => ({
+          id: period.id,
+          outTime: period.out_time,
+          inTime: period.in_time,
+          durationMinutes: period.duration_minutes,
+          reason: period.reason,
+        }));
+      } catch (err) {
+        console.log('Error fetching out sessions:', err.message);
+      }
+    }
     
     res.json({
       success: true,
       message: 'Punched out successfully',
       attendance: result.rows[0],
+      outCount: attendance.out_count || 0,
+      totalOutTimeMinutes,
+      totalOutTimeHours: parseFloat((totalOutTimeMinutes / 60).toFixed(2)),
+      netWorkingMinutes,
+      netWorkingHours: parseFloat((netWorkingMinutes / 60).toFixed(2)),
+      totalTimeMinutes: totalMinutes,
+      totalTimeHours: parseFloat((totalMinutes / 60).toFixed(2)),
+      outSessions,
+      status,
     });
   } catch (error) {
     console.error('Punch out error:', error);
     res.status(500).json({
       success: false,
-      error: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
     });
   }
 };
@@ -374,10 +565,17 @@ const validateLocation = async (req, res) => {
 /**
  * Get today's attendance status
  */
+/**
+ * Get today's attendance status
+ */
+/**
+ * Get today's attendance status with detailed OUT-IN session tracking
+ */
 const getTodayStatus = async (req, res) => {
   try {
     const employeeId = req.user.id;
     const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
     
     const result = await pool.query(
       'SELECT * FROM attendance WHERE employee_id = $1 AND date = $2',
@@ -389,31 +587,134 @@ const getTodayStatus = async (req, res) => {
         success: true,
         punchedIn: false,
         punchInTime: null,
+        punchOutTime: null,
+        insideOffice: false,
+        outCount: 0,
+        totalOutTimeMinutes: 0,
+        netWorkingMinutes: 0,
+        netWorkingHours: 0,
+        outSessions: [],
+        status: 'NOT_PUNCHED_IN',
       });
     }
     
     const attendance = result.rows[0];
     
-    // Check if there's an active OUT period
-    const outPeriodResult = await pool.query(
+    if (!attendance.punch_in) {
+      return res.json({
+        success: true,
+        punchedIn: false,
+        punchInTime: null,
+        punchOutTime: null,
+        insideOffice: false,
+        outCount: 0,
+        totalOutTimeMinutes: 0,
+        netWorkingMinutes: 0,
+        netWorkingHours: 0,
+        outSessions: [],
+        status: 'NOT_PUNCHED_IN',
+      });
+    }
+    
+    // Check if attendance_out_periods table exists
+    let isOutside = false;
+    let outSessions = [];
+    let totalOutTimeMinutes = attendance.total_out_time_minutes || 0;
+    let outCount = attendance.out_count || 0;
+    
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'attendance_out_periods')"
+      );
+      
+      if (tableCheck.rows[0].exists) {
+        // Get all OUT periods for today
+        const outPeriodsResult = await pool.query(
       `SELECT * FROM attendance_out_periods 
-       WHERE attendance_id = $1 AND in_time IS NULL 
-       ORDER BY out_time DESC LIMIT 1`,
+           WHERE attendance_id = $1 
+           ORDER BY out_time ASC`,
       [attendance.id]
     );
     
-    const isOutside = outPeriodResult.rows.length > 0;
+        outSessions = outPeriodsResult.rows.map(period => ({
+          id: period.id,
+          outTime: period.out_time,
+          inTime: period.in_time,
+          durationMinutes: period.duration_minutes,
+          reason: period.reason,
+          isActive: period.in_time === null,
+        }));
+        
+        // Check for active OUT period
+        const activeOutPeriod = outPeriodsResult.rows.find(p => p.in_time === null);
+        isOutside = !!activeOutPeriod;
+        
+        // Calculate total out time (including active period)
+        totalOutTimeMinutes = outSessions.reduce((total, session) => {
+          if (session.inTime) {
+            return total + (session.durationMinutes || 0);
+          } else {
+            // Active session - calculate duration up to now
+            const outTime = new Date(session.outTime);
+            const durationMinutes = Math.floor((now - outTime) / 1000 / 60);
+            return total + durationMinutes;
+          }
+        }, 0);
+        
+        outCount = outSessions.length;
+      }
+    } catch (err) {
+      console.log('attendance_out_periods table not available:', err.message);
+      isOutside = false;
+    }
+    
+    // Calculate net working time
+    let netWorkingMinutes = 0;
+    let netWorkingHours = 0;
+    
+    if (attendance.punch_in) {
+      const punchInTime = new Date(attendance.punch_in);
+      const endTime = attendance.punch_out ? new Date(attendance.punch_out) : now;
+      const totalMinutes = Math.floor((endTime - punchInTime) / 1000 / 60);
+      netWorkingMinutes = Math.max(0, totalMinutes - totalOutTimeMinutes);
+      netWorkingHours = parseFloat((netWorkingMinutes / 60).toFixed(2));
+    }
+    
+    // Calculate status based on net working time (only if punched out)
+    let status = attendance.status || 'PRESENT';
+    if (attendance.punch_out) {
+      if (netWorkingMinutes < 240) { // Less than 4 hours
+        status = 'ABSENT';
+      } else if (netWorkingMinutes < 480) { // Less than 8 hours
+        status = 'HALF_DAY';
+      } else { // 8 hours or more
+        status = 'PRESENT';
+      }
+    } else {
+      // Still punched in - status based on current state
+      if (isOutside) {
+        status = 'OUT_OF_OFFICE';
+      } else {
+        status = 'INSIDE_OFFICE';
+      }
+    }
     
     res.json({
       success: true,
       punchedIn: !!attendance.punch_in,
       punchInTime: attendance.punch_in,
-      punchOutTime: attendance.punch_out,
+      punchOutTime: attendance.punch_out || null,
       insideOffice: attendance.punch_in && !attendance.punch_out ? !isOutside : null,
-      lastHeartbeat: attendance.last_heartbeat,
-      outCount: attendance.out_count || 0,
-      totalOutTimeMinutes: attendance.total_out_time_minutes || 0,
-      status: attendance.status || 'PRESENT',
+      lastHeartbeat: attendance.last_heartbeat || null,
+      outCount,
+      totalOutTimeMinutes,
+      totalOutTimeHours: parseFloat((totalOutTimeMinutes / 60).toFixed(2)),
+      netWorkingMinutes,
+      netWorkingHours,
+      outSessions,
+      status,
+      // Additional info
+      totalTimeMinutes: attendance.punch_in ? Math.floor(((attendance.punch_out ? new Date(attendance.punch_out) : now) - new Date(attendance.punch_in)) / 1000 / 60) : 0,
     });
   } catch (error) {
     console.error('Get today status error:', error);
@@ -428,6 +729,7 @@ const getTodayStatus = async (req, res) => {
  * Get my attendance
  */
 const getMyAttendance = async (req, res) => {
+  // ... rest of the function
   try {
     const employeeId = req.user.id;
     const { month, year } = req.query;
@@ -558,10 +860,32 @@ const getMyMonthlyCalendar = async (req, res) => {
       }
     }
     
+    // Get approved regularization requests for the month
+    let regularizationResult = { rows: [] };
+    try {
+      regularizationResult = await pool.query(
+        `SELECT 
+          attendance_date,
+          requested_punch_in,
+          requested_punch_out,
+          status
+         FROM regularization_requests
+         WHERE employee_id = $1
+           AND status = 'HR_APPROVED'
+           AND EXTRACT(MONTH FROM attendance_date) = $2
+           AND EXTRACT(YEAR FROM attendance_date) = $3
+         ORDER BY attendance_date`,
+        [employeeId, monthNum, yearNum]
+      );
+    } catch (error) {
+      console.warn('Error fetching regularization requests:', error.message);
+    }
+    
     // Build calendar data
     const attendanceMap = new Map();
     const leaveMap = new Map();
     const holidaysSet = new Set();
+    const regularizationMap = new Map();
     
     // Map attendance by date
     attendanceResult.rows.forEach(att => {
@@ -629,6 +953,31 @@ const getMyMonthlyCalendar = async (req, res) => {
       holidaysSet.add(dateStr);
     });
     
+    // Map approved regularizations by date
+    regularizationResult.rows.forEach(reg => {
+      let dateStr;
+      try {
+        if (reg.attendance_date instanceof Date) {
+          dateStr = reg.attendance_date.toISOString().split('T')[0];
+        } else if (typeof reg.attendance_date === 'string') {
+          // Handle both ISO strings and date-only strings
+          dateStr = reg.attendance_date.split('T')[0];
+        } else {
+          dateStr = new Date(reg.attendance_date).toISOString().split('T')[0];
+        }
+      } catch (e) {
+        console.warn('Error parsing regularization date:', reg.attendance_date, e);
+        return;
+      }
+      
+      // Regularization overrides attendance - always use regularization data if available
+      regularizationMap.set(dateStr, {
+        punch_in: reg.requested_punch_in,
+        punch_out: reg.requested_punch_out,
+        status: 'PRESENT',
+      });
+    });
+    
     // Build calendar days
     const days = [];
     let summary = {
@@ -650,26 +999,33 @@ const getMyMonthlyCalendar = async (req, res) => {
       let dayType = 'WORKDAY';
       let leaveType = null;
       
-      // Check if it's an admin-defined holiday
-      if (holidaysSet.has(dateStr)) {
+      // Priority 1: Check for approved regularization (overrides everything)
+      const regularization = regularizationMap.get(dateStr);
+      if (regularization) {
+        dayType = 'WORKDAY';
+        dayStatus = 'PRESENT';
+        summary.presentDays++;
+      }
+      // Priority 2: Check if it's an admin-defined holiday (but not if there's regularization)
+      else if (holidaysSet.has(dateStr)) {
         dayType = 'HOLIDAY';
         dayStatus = 'HOLIDAY';
         summary.holidayDays++;
       }
-      // Check if it's a weekend
+      // Priority 3: Check if it's a weekend (but not if there's regularization)
       else if (dayOfWeek === 0 || dayOfWeek === 6) {
         dayType = 'WEEKEND';
         dayStatus = 'HOLIDAY';
         summary.holidayDays++;
       } else {
-        // Check for leave
+        // Priority 4: Check for leave
         if (leaveMap.has(dateStr)) {
           dayType = 'LEAVE';
           dayStatus = 'LEAVE';
           leaveType = leaveMap.get(dateStr);
           summary.leaveDays++;
         } else {
-          // Check attendance
+          // Priority 5: Check attendance
           const attendance = attendanceMap.get(dateStr);
           if (attendance) {
             dayStatus = attendance.status;
@@ -686,14 +1042,17 @@ const getMyMonthlyCalendar = async (req, res) => {
         }
       }
       
+      // Get punch in/out from regularization (priority) or attendance
+      const attendance = regularizationMap.get(dateStr) || attendanceMap.get(dateStr);
+      
       days.push({
         day,
         date: dateStr,
         status: dayStatus,
         type: dayType,
         leaveType,
-        punchIn: attendanceMap.get(dateStr)?.punch_in || null,
-        punchOut: attendanceMap.get(dateStr)?.punch_out || null,
+        punchIn: attendance?.punch_in || null,
+        punchOut: attendance?.punch_out || null,
       });
     }
     
@@ -724,6 +1083,10 @@ const getMyMonthlyCalendar = async (req, res) => {
  * Send heartbeat - monitors user presence
  * Auto punches out if user is outside geofence or IP changed
  */
+/**
+ * Send heartbeat - Track OUT-IN sessions (DOES NOT auto punch out)
+ * Tracks when employee goes outside office radius or disconnects from Wi-Fi
+ */
 const sendHeartbeat = async (req, res) => {
   try {
     const { latitude, longitude, ipAddress } = req.body;
@@ -746,9 +1109,10 @@ const sendHeartbeat = async (req, res) => {
     );
     
     if (attendanceResult.rows.length === 0 || !attendanceResult.rows[0].punch_in) {
-      return res.status(400).json({
-        success: false,
-        error: 'No active punch in found',
+      return res.json({
+        success: true,
+        message: 'Not currently punched in',
+        punchedIn: false,
       });
     }
     
@@ -764,85 +1128,103 @@ const sendHeartbeat = async (req, res) => {
     }
     
     // Validate location and IP
-    const validation = await validateLocationAndIP(latitude, longitude, ipAddress);
-    const settings = await getOfficeSettings();
+    let validation;
+    let settings;
+    let isOutsideOffice = false;
     
-    // Check if user is outside office (geo > 50m OR IP changed)
-    const isOutsideOffice = !validation.locationValid || 
-                           (ipAddress !== attendance.ip_address && ipAddress !== settings.office_public_ip);
+    try {
+      // Edge case: If GPS is off or location unavailable, treat as outside
+      // Edge case: If IP is null/empty, treat as disconnected
+      if (!latitude || !longitude || !ipAddress) {
+        isOutsideOffice = true; // Missing data = outside
+        validation = { locationValid: false, wifiValid: false };
+        settings = await getOfficeSettings();
+      } else {
+        validation = await validateLocationAndIP(latitude, longitude, ipAddress);
+        settings = await getOfficeSettings();
+    
+        // Check if user is outside office (geo > radius OR IP changed from office Wi-Fi)
+        isOutsideOffice = !validation.locationValid || 
+                         (ipAddress !== settings.office_public_ip);
+      }
+    } catch (err) {
+      // Edge case: Network error or validation failure - assume outside
+      console.error('Validation error in heartbeat:', err.message);
+      isOutsideOffice = true;
+      validation = { locationValid: false, wifiValid: false };
+      try {
+        settings = await getOfficeSettings();
+      } catch {
+        settings = { office_public_ip: '' };
+      }
+    }
     
     // Update last heartbeat
+    try {
     await pool.query(
-      'UPDATE attendance SET last_heartbeat = $1 WHERE id = $2',
-      [now, attendance.id]
+        'UPDATE attendance SET last_heartbeat = $1, latitude = $2, longitude = $3, ip_address = $4 WHERE id = $5',
+        [now, latitude, longitude, ipAddress, attendance.id]
     );
+    } catch (err) {
+      // Column doesn't exist - use basic update
+      await pool.query(
+        'UPDATE attendance SET latitude = $1, longitude = $2, ip_address = $3 WHERE id = $4',
+        [latitude, longitude, ipAddress, attendance.id]
+      );
+    }
     
-    // If user is outside office, auto punch out
-    if (isOutsideOffice) {
-      // Check if we're already tracking an OUT period
-      const outPeriodResult = await pool.query(
+    // Check if attendance_out_periods table exists
+    let hasOutPeriodsTable = false;
+    try {
+      const tableCheck = await pool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'attendance_out_periods')"
+      );
+      hasOutPeriodsTable = tableCheck.rows[0].exists;
+    } catch (err) {
+      hasOutPeriodsTable = false;
+    }
+    
+    if (hasOutPeriodsTable) {
+      // Check for active OUT period
+      const activeOutPeriodResult = await pool.query(
         `SELECT * FROM attendance_out_periods 
          WHERE attendance_id = $1 AND in_time IS NULL 
          ORDER BY out_time DESC LIMIT 1`,
         [attendance.id]
       );
       
-      if (outPeriodResult.rows.length === 0) {
-        // Start new OUT period
+      const hasActiveOutPeriod = activeOutPeriodResult.rows.length > 0;
+      
+      if (isOutsideOffice && !hasActiveOutPeriod) {
+        // Employee just went OUT - create new OUT period
         const reason = !validation.locationValid ? 'GEO_FENCE_EXIT' : 'IP_CHANGE';
         
-        // Check OUT count limit (max 2 per day)
-        if (attendance.out_count >= 2) {
-          // Auto punch out if max OUT count reached
-          const punchOutTime = new Date();
           await pool.query(
-            'UPDATE attendance SET punch_out = $1, is_auto_punched_out = true WHERE id = $2',
-            [punchOutTime, attendance.id]
-          );
-          
-          return res.json({
-            success: true,
-            message: 'Auto punched out: Maximum OUT count reached',
-            punchedIn: false,
-            autoPunchedOut: true,
-            reason: 'MAX_OUT_COUNT',
-          });
-        }
-        
-        // Create new OUT period
-        await pool.query(
-          `INSERT INTO attendance_out_periods (attendance_id, out_time, reason) 
+          `INSERT INTO attendance_out_periods 
+           (attendance_id, out_time, reason) 
            VALUES ($1, $2, $3)`,
           [attendance.id, now, reason]
         );
         
-        // Increment OUT count
+        // Increment out count
         await pool.query(
-          'UPDATE attendance SET out_count = out_count + 1 WHERE id = $1',
+          'UPDATE attendance SET out_count = COALESCE(out_count, 0) + 1 WHERE id = $1',
           [attendance.id]
         );
-      }
       
       return res.json({
         success: true,
-        message: 'Outside office - OUT period started',
-        insideOffice: false,
+          message: 'Marked as OUT OF OFFICE',
         punchedIn: true,
+          insideOffice: false,
+          status: 'OUT_OF_OFFICE',
         locationValid: validation.locationValid,
         wifiValid: validation.wifiValid,
+          outTime: now,
       });
-    } else {
-      // User is inside office - check if there's an active OUT period to close
-      const outPeriodResult = await pool.query(
-        `SELECT * FROM attendance_out_periods 
-         WHERE attendance_id = $1 AND in_time IS NULL 
-         ORDER BY out_time DESC LIMIT 1`,
-        [attendance.id]
-      );
-      
-      if (outPeriodResult.rows.length > 0) {
-        // Close the OUT period
-        const outPeriod = outPeriodResult.rows[0];
+      } else if (!isOutsideOffice && hasActiveOutPeriod) {
+        // Employee just came back IN - close the OUT period
+        const outPeriod = activeOutPeriodResult.rows[0];
         const outTime = new Date(outPeriod.out_time);
         const durationMinutes = Math.floor((now - outTime) / 1000 / 60);
         
@@ -853,52 +1235,54 @@ const sendHeartbeat = async (req, res) => {
           [now, durationMinutes, outPeriod.id]
         );
         
-        // Update total OUT time
+        // Update total out time
         await pool.query(
-          'UPDATE attendance SET total_out_time_minutes = total_out_time_minutes + $1 WHERE id = $2',
+          'UPDATE attendance SET total_out_time_minutes = COALESCE(total_out_time_minutes, 0) + $1 WHERE id = $2',
           [durationMinutes, attendance.id]
-        );
-        
-        // Check if total OUT time exceeds limits
-        const updatedAttendance = await pool.query(
-          'SELECT total_out_time_minutes, out_count FROM attendance WHERE id = $1',
-          [attendance.id]
-        );
-        
-        const totalOutMinutes = updatedAttendance.rows[0].total_out_time_minutes;
-        
-        // Update status based on OUT time
-        let status = 'PRESENT';
-        if (totalOutMinutes > 240) {
-          status = 'ABSENT';
-          // Auto punch out if > 240 minutes
-          await pool.query(
-            'UPDATE attendance SET punch_out = $1, status = $2, is_auto_punched_out = true WHERE id = $3',
-            [now, status, attendance.id]
           );
           
           return res.json({
             success: true,
-            message: 'Auto punched out: Total OUT time exceeds 240 minutes',
-            punchedIn: false,
-            autoPunchedOut: true,
-            reason: 'MAX_OUT_TIME',
-          });
-        } else if (totalOutMinutes > 120) {
-          status = 'HALF_DAY';
-        }
-        
-        await pool.query(
-          'UPDATE attendance SET status = $1 WHERE id = $2',
-          [status, attendance.id]
-        );
-      }
-      
+          message: 'Back IN OFFICE',
+          punchedIn: true,
+          insideOffice: true,
+          status: 'INSIDE_OFFICE',
+          locationValid: validation.locationValid,
+          wifiValid: validation.wifiValid,
+          inTime: now,
+          outDurationMinutes: durationMinutes,
+        });
+      } else if (isOutsideOffice && hasActiveOutPeriod) {
+        // Still outside - update status
       return res.json({
         success: true,
-        message: 'Heartbeat received - Inside office',
+          message: 'Still OUT OF OFFICE',
+          punchedIn: true,
+          insideOffice: false,
+          status: 'OUT_OF_OFFICE',
+          locationValid: validation.locationValid,
+          wifiValid: validation.wifiValid,
+        });
+      } else {
+        // Still inside - update status
+        return res.json({
+          success: true,
+          message: 'Inside office',
+          punchedIn: true,
         insideOffice: true,
+          status: 'INSIDE_OFFICE',
+          locationValid: validation.locationValid,
+          wifiValid: validation.wifiValid,
+        });
+      }
+    } else {
+      // Table doesn't exist - return basic status
+      return res.json({
+        success: true,
+        message: isOutsideOffice ? 'Outside office area' : 'Inside office',
         punchedIn: true,
+        insideOffice: !isOutsideOffice,
+        status: isOutsideOffice ? 'OUT_OF_OFFICE' : 'INSIDE_OFFICE',
         locationValid: validation.locationValid,
         wifiValid: validation.wifiValid,
       });
@@ -942,7 +1326,8 @@ const checkHeartbeatTimeouts = async () => {
         [now, 'INCOMPLETE', attendance.id]
       );
       
-      // If there's an active OUT period, close it
+      // If there's an active OUT period, close it (only if table exists)
+      try {
       const outPeriodResult = await pool.query(
         `SELECT * FROM attendance_out_periods 
          WHERE attendance_id = $1 AND in_time IS NULL 
@@ -966,6 +1351,10 @@ const checkHeartbeatTimeouts = async () => {
           'UPDATE attendance SET total_out_time_minutes = total_out_time_minutes + $1 WHERE id = $2',
           [durationMinutes, attendance.id]
         );
+        }
+      } catch (err) {
+        // Table doesn't exist or query failed - ignore and continue
+        console.log('attendance_out_periods table not available in checkHeartbeatTimeouts:', err.message);
       }
       
       console.log(`Auto punched out employee ${attendance.employee_id} (${attendance.name}) due to heartbeat timeout`);
@@ -1013,24 +1402,30 @@ const getPresenceStatus = async (req, res) => {
       });
     }
     
-    // Check if there's an active OUT period
+    // Check if there's an active OUT period (only if table exists)
+    let isOutside = false;
+    try {
     const outPeriodResult = await pool.query(
       `SELECT * FROM attendance_out_periods 
        WHERE attendance_id = $1 AND in_time IS NULL 
        ORDER BY out_time DESC LIMIT 1`,
       [attendance.id]
     );
-    
-    const isOutside = outPeriodResult.rows.length > 0;
+      isOutside = outPeriodResult.rows.length > 0;
+    } catch (err) {
+      // Table doesn't exist or query failed - ignore and continue
+      console.log('attendance_out_periods table not available:', err.message);
+      isOutside = false;
+    }
     
     return res.json({
       success: true,
       punchedIn: true,
       insideOffice: !isOutside,
       status: isOutside ? 'OUTSIDE_OFFICE' : 'INSIDE_OFFICE',
-      lastHeartbeat: attendance.last_heartbeat,
-      outCount: attendance.out_count,
-      totalOutTimeMinutes: attendance.total_out_time_minutes,
+      lastHeartbeat: attendance.last_heartbeat || null,
+      outCount: attendance.out_count || 0,
+      totalOutTimeMinutes: attendance.total_out_time_minutes || 0,
     });
   } catch (error) {
     console.error('Get presence status error:', error);

@@ -5,6 +5,33 @@ export const useLocation = (autoRequest = false) => {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
 
+  const handleLocationError = (error, isHTTP, isLocalhost, resolve, reject) => {
+    let errorMessage = 'Failed to get location'
+    
+    switch (error.code) {
+      case error.PERMISSION_DENIED:
+        // Check if it's HTTP issue
+        if (isHTTP && !isLocalhost) {
+          errorMessage = 'Location permission denied. Please enable location access in your browser settings. On mobile: Settings → Site Settings → Location → Allow.'
+        } else {
+          errorMessage = 'Location permission denied. Please enable location access in your browser settings.'
+        }
+        break
+      case error.POSITION_UNAVAILABLE:
+        errorMessage = 'Location information is unavailable. Please check your GPS/WiFi settings.'
+        break
+      case error.TIMEOUT:
+        errorMessage = 'Location request timed out. Please try again.'
+        break
+      default:
+        errorMessage = error.message || 'Failed to get location'
+    }
+    
+    setError(errorMessage)
+    setLoading(false)
+    reject(errorMessage)
+  }
+
   const getCurrentLocation = () => {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
@@ -33,9 +60,7 @@ export const useLocation = (autoRequest = false) => {
         maximumAge: 0,
       }
 
-      // Try to get location
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
+      const successCallback = (position) => {
           const locationData = {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
@@ -43,43 +68,35 @@ export const useLocation = (autoRequest = false) => {
           }
           setLocation(locationData)
           setLoading(false)
+        setError(null)
           resolve(locationData)
-        },
-        (error) => {
-          let errorMessage = 'Failed to get location'
-          let isHTTPIssue = false
-          
-          switch (error.code) {
-            case error.PERMISSION_DENIED:
-              // Check if it's HTTP issue
-              if (isHTTP && !isLocalhost) {
-                errorMessage = 'Location blocked: Using HTTP (not secure). Chrome blocks geolocation on HTTP. Enable insecure origins in Chrome flags (chrome://flags) or use HTTPS.'
-                isHTTPIssue = true
-              } else {
-                errorMessage = 'Location permission denied. Please enable location access in browser settings.'
-              }
-              break
-            case error.POSITION_UNAVAILABLE:
-              errorMessage = 'Location information is unavailable. Please check your GPS/WiFi.'
-              break
-            case error.TIMEOUT:
-              errorMessage = 'Location request timed out. Please try again.'
-              break
-            default:
-              errorMessage = error.message || 'Failed to get location'
+      }
+
+      const errorCallback = (error) => {
+        handleLocationError(error, isHTTP, isLocalhost, resolve, reject)
+      }
+
+      // Check permission status first (for better error handling)
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'geolocation' }).then((result) => {
+          if (result.state === 'denied') {
+            const errorMsg = 'Location permission denied. Please enable location access in your browser settings.'
+            setError(errorMsg)
+            setLoading(false)
+            reject(errorMsg)
+            return
           }
           
-          // Add HTTP-specific help
-          if (isHTTPIssue) {
-            errorMessage += '\n\nFix: Open chrome://flags → Search "Insecure origins" → Add: http://192.168.1.223:5173'
-          }
-          
-          setError(errorMessage)
-          setLoading(false)
-          reject(errorMessage)
-        },
-        options
-      )
+          // Try to get location
+          navigator.geolocation.getCurrentPosition(successCallback, errorCallback, options)
+        }).catch(() => {
+          // Permissions API failed, try directly
+          navigator.geolocation.getCurrentPosition(successCallback, errorCallback, options)
+        })
+      } else {
+        // Permissions API not supported, try directly
+        navigator.geolocation.getCurrentPosition(successCallback, errorCallback, options)
+      }
     })
   }
 

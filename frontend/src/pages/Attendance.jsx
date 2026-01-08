@@ -83,17 +83,6 @@ const Attendance = () => {
     }
   }, [locationError])
 
-  // Show prompt if location error is permission-related
-  useEffect(() => {
-    if (locationError && locationError.includes('permission')) {
-      // Show prompt after a short delay
-      const timer = setTimeout(() => {
-        setShowLocationPrompt(true)
-      }, 1500)
-      return () => clearTimeout(timer)
-    }
-  }, [locationError])
-
   // Reload today status periodically to update punch out state
   useEffect(() => {
     const interval = setInterval(() => {
@@ -160,10 +149,26 @@ const Attendance = () => {
   const loadTodayStatus = async () => {
     try {
       const response = await attendanceAPI.getTodayStatus()
-      setTodayStatus(response.data)
+      
+      // Debug logging
+      console.log('Today status response:', response.data)
+      
+      // Ensure we have the data structure we expect
+      const statusData = {
+        punchedIn: response.data.punchedIn || false,
+        punchInTime: response.data.punchInTime || null,
+        punchOutTime: response.data.punchOutTime || null,
+        insideOffice: response.data.insideOffice,
+        lastHeartbeat: response.data.lastHeartbeat,
+        outCount: response.data.outCount,
+        totalOutTimeMinutes: response.data.totalOutTimeMinutes,
+        status: response.data.status,
+      }
+      
+      setTodayStatus(statusData)
       
       // Also get presence status if punched in
-      if (response.data.punchedIn && !response.data.punchOutTime) {
+      if (statusData.punchedIn && !statusData.punchOutTime) {
         try {
           const presenceResponse = await attendanceAPI.getPresenceStatus()
           if (presenceResponse.data) {
@@ -177,10 +182,17 @@ const Attendance = () => {
           }
         } catch (err) {
           console.error('Error loading presence status:', err)
+          // Don't fail if presence status fails
         }
       }
     } catch (error) {
       console.error('Error loading today status:', error)
+      // Set default state on error
+      setTodayStatus({
+        punchedIn: false,
+        punchInTime: null,
+        punchOutTime: null,
+      })
     }
   }
 
@@ -224,18 +236,18 @@ const Attendance = () => {
       setPunching(true)
       const locationData = await getCurrentLocation()
       const ipAddress = await getClientIP()
-
+  
       const response = await attendanceAPI.punchOut({
         latitude: locationData.latitude,
         longitude: locationData.longitude,
         ipAddress,
       })
-
+  
       toast.success('Punched out successfully!')
       await loadTodayStatus()
       await loadAttendanceHistory()
     } catch (error) {
-      const message = error.response?.data?.message || 'Failed to punch out'
+      const message = error.response?.data?.error || error.response?.data?.message || 'Failed to punch out'
       toast.error(message)
     } finally {
       setPunching(false)
@@ -307,9 +319,9 @@ const Attendance = () => {
         }}
         onDismiss={() => setShowLocationPrompt(false)}
       />
-      <h1 className="text-3xl font-bold text-gray-900">Attendance</h1>
+      <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Attendance</h1>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
         <PunchCard
           status={
             todayStatus?.punchedIn && !todayStatus?.punchOutTime 
@@ -318,6 +330,10 @@ const Attendance = () => {
           }
           punchInTime={todayStatus?.punchInTime}
           punchOutTime={todayStatus?.punchOutTime}
+          insideOffice={todayStatus?.insideOffice}
+          outCount={todayStatus?.outCount || 0}
+          totalOutTimeHours={todayStatus?.totalOutTimeHours || 0}
+          netWorkingHours={todayStatus?.netWorkingHours || 0}
           onPunchIn={handlePunchIn}
           onPunchOut={handlePunchOut}
           loading={punching}
@@ -335,10 +351,63 @@ const Attendance = () => {
         />
       </div>
 
+      {/* OUT-IN Sessions Card (only show if punched in) */}
+      {todayStatus?.punchedIn && todayStatus?.outSessions && todayStatus.outSessions.length > 0 && (
+        <Card title="OUT-IN Sessions Today">
+          <div className="space-y-3">
+            {todayStatus.outSessions.map((session, index) => (
+              <div key={session.id || index} className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2 mb-1">
+                      <span className="text-xs font-semibold text-gray-600">Session {index + 1}</span>
+                      {session.isActive && (
+                        <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Active</span>
+                      )}
+                    </div>
+                    <p className="text-sm text-gray-700">
+                      <span className="font-medium">Out:</span> {new Date(session.outTime).toLocaleTimeString()}
+                    </p>
+                    {session.inTime ? (
+                      <>
+                        <p className="text-sm text-gray-700">
+                          <span className="font-medium">In:</span> {new Date(session.inTime).toLocaleTimeString()}
+                        </p>
+                        <p className="text-sm text-gray-600 mt-1">
+                          Duration: {session.durationMinutes || 0} minutes ({(session.durationMinutes / 60).toFixed(2)} hrs)
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-orange-600 mt-1">
+                        Currently OUT - Duration: {Math.floor((new Date() - new Date(session.outTime)) / 1000 / 60)} minutes
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {todayStatus.outCount > 0 && (
+              <div className="bg-blue-50 p-3 rounded-lg border border-blue-200 mt-3">
+                <div className="flex justify-between text-sm">
+                  <span className="font-medium text-blue-900">Total Out Time:</span>
+                  <span className="font-bold text-blue-900">{todayStatus.totalOutTimeHours.toFixed(2)} hours</span>
+                </div>
+                {todayStatus.punchOutTime && (
+                  <div className="flex justify-between text-sm mt-2 pt-2 border-t border-blue-200">
+                    <span className="font-medium text-blue-900">Net Working Hours:</span>
+                    <span className="font-bold text-blue-900">{todayStatus.netWorkingHours.toFixed(2)} hours</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
       <Card
         title="Attendance History"
         headerAction={
-          <div className="flex space-x-2">
+          <div className="flex flex-wrap gap-2">
             <Select
               name="month"
               value={selectedMonth}

@@ -128,16 +128,39 @@ const reviewLeaveRequest = async (req, res) => {
 
 /**
  * Get all regularization requests (for HR approval)
+ * HR can see all requests for visibility, but can only approve MANAGER_APPROVED ones
  */
 const getRegularizationRequests = async (req, res) => {
   try {
     const { status } = req.query;
+    
+    // Check if manager_comments column exists, if not, add it
+    try {
+      await pool.query(`
+        ALTER TABLE regularization_requests 
+        ADD COLUMN IF NOT EXISTS manager_comments TEXT
+      `);
+    } catch (alterError) {
+      // Column might already exist, ignore
+      console.log('Manager comments column check:', alterError.message);
+    }
+    
+    try {
+      await pool.query(`
+        ALTER TABLE regularization_requests 
+        ADD COLUMN IF NOT EXISTS hr_comments TEXT
+      `);
+    } catch (alterError) {
+      // Column might already exist, ignore
+      console.log('HR comments column check:', alterError.message);
+    }
     
     let query = `SELECT rr.*, e.name as employee_name, e.email as employee_email 
                  FROM regularization_requests rr 
                  JOIN employees e ON rr.employee_id = e.id`;
     const params = [];
     
+    // If status filter is provided, use it; otherwise return all requests
     if (status) {
       query += ` WHERE rr.status = $1`;
       params.push(status);
@@ -201,10 +224,20 @@ const reviewRegularizationRequest = async (req, res) => {
     
     const newStatus = action === 'approve' ? 'HR_APPROVED' : 'REJECTED';
     
-    // Update regularization request
+    // Ensure hr_comments column exists
+    try {
+      await pool.query(`
+        ALTER TABLE regularization_requests 
+        ADD COLUMN IF NOT EXISTS hr_comments TEXT
+      `);
+    } catch (alterError) {
+      // Column might already exist, ignore
+    }
+    
+    // Update regularization request with HR comments
     const updateResult = await pool.query(
-      'UPDATE regularization_requests SET status = $1, reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *',
-      [newStatus, hrId, id]
+      'UPDATE regularization_requests SET status = $1, reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP, hr_comments = $4 WHERE id = $3 RETURNING *',
+      [newStatus, hrId, id, comments || null]
     );
     
     // If approved, update attendance record

@@ -36,19 +36,41 @@ const Regularization = () => {
   const onSubmit = async (data) => {
     try {
       setSubmitting(true)
+      
+      // Handle night shifts: if punch out time is earlier than punch in time,
+      // it means punch out is the next day
+      let punchOutDate = data.date
+      const punchInTime = data.requestedPunchIn
+      const punchOutTime = data.requestedPunchOut
+      
+      // Compare times (HH:MM format)
+      if (punchOutTime && punchInTime) {
+        const [punchInHour, punchInMin] = punchInTime.split(':').map(Number)
+        const [punchOutHour, punchOutMin] = punchOutTime.split(':').map(Number)
+        
+        // If punch out time is earlier than punch in time, it's a night shift
+        if (punchOutHour < punchInHour || (punchOutHour === punchInHour && punchOutMin < punchInMin)) {
+          // Add one day to punch out date
+          const nextDay = new Date(data.date)
+          nextDay.setDate(nextDay.getDate() + 1)
+          punchOutDate = nextDay.toISOString().split('T')[0]
+        }
+      }
+      
       // Convert form data to match backend expectations
       const requestData = {
         attendanceDate: data.date,
         requestedPunchIn: `${data.date}T${data.requestedPunchIn}:00`,
-        requestedPunchOut: data.requestedPunchOut ? `${data.date}T${data.requestedPunchOut}:00` : null,
+        requestedPunchOut: data.requestedPunchOut ? `${punchOutDate}T${data.requestedPunchOut}:00` : null,
         reason: data.reason,
       }
+      
       await regularizationAPI.apply(requestData)
       toast.success('Regularization request submitted successfully!')
       reset()
       await loadRegularizations()
     } catch (error) {
-      const message = error.response?.data?.message || 'Failed to submit regularization request'
+      const message = error.response?.data?.error || error.response?.data?.message || 'Failed to submit regularization request'
       toast.error(message)
     } finally {
       setSubmitting(false)
@@ -67,52 +89,82 @@ const Regularization = () => {
     ? regularizations.filter((reg) => reg.status === filterStatus)
     : regularizations
 
-  const regularizationColumns = [
-    {
-      header: 'Date',
-      accessor: 'attendance_date',
-      render: (row) => format(new Date(row.attendance_date || row.date), 'MMM dd, yyyy'),
-    },
-    {
-      header: 'Requested Punch In',
-      accessor: 'requested_punch_in',
-      render: (row) => {
-        const time = row.requested_punch_in || row.requestedPunchIn
-        if (!time) return '-'
-        const date = new Date(time)
-        return format(date, 'h:mm a')
+    const regularizationColumns = [
+      {
+        header: 'Date',
+        accessor: 'attendance_date',
+        render: (row) => {
+          const date = row.attendance_date || row.date || row.attendanceDate
+          if (!date) return '-'
+          try {
+            const dateObj = new Date(date)
+            if (isNaN(dateObj.getTime())) return '-'
+            return format(dateObj, 'MMM dd, yyyy')
+          } catch (error) {
+            return '-'
+          }
+        },
       },
-    },
-    {
-      header: 'Requested Punch Out',
-      accessor: 'requested_punch_out',
-      render: (row) => {
-        const time = row.requested_punch_out || row.requestedPunchOut
-        if (!time) return '-'
-        const date = new Date(time)
-        return format(date, 'h:mm a')
+      {
+        header: 'Requested Punch In',
+        accessor: 'requested_punch_in',
+        render: (row) => {
+          const time = row.requested_punch_in || row.requestedPunchIn
+          if (!time) return '-'
+          try {
+            const date = new Date(time)
+            if (isNaN(date.getTime())) return '-'
+            return format(date, 'h:mm a')
+          } catch (error) {
+            return '-'
+          }
+        },
       },
-    },
-    {
-      header: 'Reason',
-      accessor: 'reason',
-      render: (row) => <span className="truncate max-w-xs">{row.reason}</span>,
-    },
-    {
-      header: 'Status',
-      accessor: 'status',
-      render: (row) => (
-        <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(row.status)}`}>
-          {row.status.replace('_', ' ')}
-        </span>
-      ),
-    },
-    {
-      header: 'Applied On',
-      accessor: 'createdAt',
-      render: (row) => format(new Date(row.createdAt), 'MMM dd, yyyy'),
-    },
-  ]
+      {
+        header: 'Requested Punch Out',
+        accessor: 'requested_punch_out',
+        render: (row) => {
+          const time = row.requested_punch_out || row.requestedPunchOut
+          if (!time) return '-'
+          try {
+            const date = new Date(time)
+            if (isNaN(date.getTime())) return '-'
+            return format(date, 'h:mm a')
+          } catch (error) {
+            return '-'
+          }
+        },
+      },
+      {
+        header: 'Reason',
+        accessor: 'reason',
+        render: (row) => <span className="truncate max-w-xs">{row.reason || '-'}</span>,
+      },
+      {
+        header: 'Status',
+        accessor: 'status',
+        render: (row) => (
+          <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(row.status)}`}>
+            {row.status ? row.status.replace(/_/g, ' ') : 'PENDING'}
+          </span>
+        ),
+      },
+      {
+        header: 'Applied On',
+        accessor: 'createdAt',
+        render: (row) => {
+          const date = row.createdAt || row.created_at
+          if (!date) return '-'
+          try {
+            const dateObj = new Date(date)
+            if (isNaN(dateObj.getTime())) return '-'
+            return format(dateObj, 'MMM dd, yyyy')
+          } catch (error) {
+            return '-'
+          }
+        },
+      },
+    ]
 
   // Get yesterday's date as max date
   const yesterday = new Date()

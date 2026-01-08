@@ -34,10 +34,34 @@ const Reports = () => {
         ...(department && { department }),
       }
       const response = await hrAPI.getReports(params)
-      setReports(response.data?.records || [])
-      setSummary(response.data?.summary || summary)
+      
+      // Extract data from response structure: response.data.report.attendance
+      const attendanceData = response.data?.report?.attendance || response.data?.attendance || []
+      
+      // Map API fields (snake_case) to frontend fields (camelCase)
+      const mappedReports = attendanceData.map(emp => ({
+        id: emp.id,
+        employeeName: emp.name || emp.employee_name,
+        email: emp.email || emp.employee_email,
+        totalDays: parseInt(emp.total_days || emp.totalDays || 0),
+        fullDays: parseInt(emp.full_days || emp.fullDays || 0),
+        incompleteDays: parseInt(emp.incomplete_days || emp.incompleteDays || 0),
+        absentDays: parseInt(emp.absent_days || emp.absentDays || 0),
+      }))
+      
+      setReports(mappedReports)
+      
+      // Calculate summary from attendance data
+      const calculatedSummary = {
+        totalPresent: mappedReports.reduce((sum, emp) => sum + emp.fullDays, 0),
+        totalAbsent: mappedReports.reduce((sum, emp) => sum + emp.absentDays, 0),
+        totalOnLeave: response.data?.report?.leaveSummary?.length || 0,
+      }
+      
+      setSummary(calculatedSummary)
     } catch (error) {
       console.error('Error loading reports:', error)
+      toast.error('Failed to load reports')
     } finally {
       setLoading(false)
     }
@@ -70,32 +94,44 @@ const Reports = () => {
     {
       header: 'Employee Name',
       accessor: 'employeeName',
-    },
-    {
-      header: 'Department',
-      accessor: 'department',
-    },
-    {
-      header: 'Date',
-      accessor: 'date',
-      render: (row) => format(new Date(row.date), 'MMM dd, yyyy'),
-    },
-    {
-      header: 'Punch In',
-      accessor: 'punchIn',
-      render: (row) => (row.punchIn ? format(new Date(row.punchIn), 'h:mm a') : '-'),
-    },
-    {
-      header: 'Punch Out',
-      accessor: 'punchOut',
-      render: (row) => (row.punchOut ? format(new Date(row.punchOut), 'h:mm a') : '-'),
-    },
-    {
-      header: 'Status',
-      accessor: 'status',
       render: (row) => (
-        <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(row.status)}`}>
-          {row.status}
+        <div>
+          <div className="font-medium">{row.employeeName}</div>
+          <div className="text-sm text-gray-500">{row.email}</div>
+        </div>
+      ),
+    },
+    {
+      header: 'Total Days',
+      accessor: 'totalDays',
+      render: (row) => (
+        <span className="font-semibold">{row.totalDays}</span>
+      ),
+    },
+    {
+      header: 'Full Days',
+      accessor: 'fullDays',
+      render: (row) => (
+        <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+          {row.fullDays}
+        </span>
+      ),
+    },
+    {
+      header: 'Incomplete Days',
+      accessor: 'incompleteDays',
+      render: (row) => (
+        <span className="px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+          {row.incompleteDays}
+        </span>
+      ),
+    },
+    {
+      header: 'Absent Days',
+      accessor: 'absentDays',
+      render: (row) => (
+        <span className="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+          {row.absentDays}
         </span>
       ),
     },
@@ -160,12 +196,12 @@ const Reports = () => {
         </div>
       </Card>
 
-      <Card title="Attendance Records">
+      <Card title="Employee Attendance Summary">
         <Table
           columns={reportColumns}
           data={reports}
           loading={loading}
-          emptyMessage="No attendance records found"
+          emptyMessage="No attendance data found for the selected period"
         />
       </Card>
     </div>

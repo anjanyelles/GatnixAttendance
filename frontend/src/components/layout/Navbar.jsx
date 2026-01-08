@@ -54,33 +54,22 @@ const Navbar = () => {
   if (!user) return null
 
   return (
-    <nav className="bg-white shadow-lg">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between h-16">
-          <div className="flex">
+    <nav className="bg-white shadow-lg sticky top-0 z-30">
+      <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-8">
+        <div className="flex justify-between items-center h-14 md:h-16">
+          <div className="flex items-center">
             <div className="flex-shrink-0 flex items-center">
-              <h1 className="text-xl font-bold text-primary-600">Gatnix</h1>
-            </div>
-            <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-              {/* {getRoleBasedLinks().map((link) => (
-                <Link
-                  key={link.path}
-                  to={link.path}
-                  className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-                >
-                  {link.label}
-                </Link>
-              ))} */}
+              <h1 className="text-lg md:text-xl font-bold text-primary-600">Gatnix</h1>
             </div>
           </div>
           <div className="flex items-center">
-            <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-700">
+            <div className="flex items-center space-x-2 md:space-x-4">
+              <span className="text-xs md:text-sm text-gray-700 truncate max-w-[100px] md:max-w-none">
                 {user.name} ({user.role})
               </span>
               <button
                 onClick={handleLogout}
-                className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 text-sm font-medium"
+                className="bg-red-600 text-white px-2 md:px-4 py-1.5 md:py-2 rounded-lg hover:bg-red-700 text-xs md:text-sm font-medium"
               >
                 Logout
               </button>

@@ -52,6 +52,12 @@ const LeaveApproval = () => {
   }
 
   const handleApprove = (leave) => {
+    // Check if already processed
+    if (leave.status !== LEAVE_STATUS.PENDING && leave.status !== 'PENDING') {
+      toast.warning(`This leave request has already been ${leave.status.replace(/_/g, ' ').toLowerCase()}`)
+      loadLeaveRequests() // Refresh to get updated data
+      return
+    }
     setSelectedLeave(leave)
     setAction('approve')
     setComments('')
@@ -59,11 +65,19 @@ const LeaveApproval = () => {
   }
 
   const handleReject = (leave) => {
+    // Check if already processed
+    if (leave.status !== LEAVE_STATUS.PENDING && leave.status !== 'PENDING') {
+      toast.warning(`This leave request has already been ${leave.status.replace(/_/g, ' ').toLowerCase()}`)
+      loadLeaveRequests() // Refresh to get updated data
+      return
+    }
     setSelectedLeave(leave)
     setAction('reject')
     setComments('')
     setShowModal(true)
   }
+
+
 
   const handleSubmit = async () => {
     if (!selectedLeave) return
